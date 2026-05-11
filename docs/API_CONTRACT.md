@@ -1,5 +1,5 @@
 # API 接口契约
-> 版本: 1.1 | 基础路径: /api/v1
+> 版本: 1.2 | 基础路径: /api/v1
 > 本文件是唯一权威接口定义，前后端实现必须严格遵守，不得擅自修改
 
 ---
@@ -37,6 +37,125 @@ Authorization: Bearer {CRON_SECRET}
 
 ## LLM配置模块
 
+### POST /api/v1/auth/config/validate
+
+**用途**：验证LLM配置有效性并返回可用模型列表（对应 PRD：配置验证流程）
+**鉴权**：不需要
+
+**请求体** (`Content-Type: application/json`)：
+```json
+{
+  "provider": "string",        // 必填，枚举值：openai | anthropic | deepseek
+  "baseUrl": "string",         // 必填，API基础URL，如：https://api.deepseek.com
+  "apiKey": "string"           // 必填，API密钥
+}
+```
+
+**成功响应** (200)：
+```json
+{
+  "data": {
+    "valid": true,
+    "provider": "deepseek",
+    "baseUrl": "https://api.deepseek.com",
+    "availableModels": [
+      "deepseek-v4-flash",
+      "deepseek-v4-pro"
+    ],
+    "message": "验证成功，可用模型已更新"
+  },
+  "message": "success"
+}
+```
+
+**错误响应**：
+
+| HTTP状态码 | error字段 | 触发条件 |
+|------------|-----------|---------|
+| 400 | `validation_error` | provider不在枚举值范围内 |
+| 400 | `validation_error` | baseUrl格式不正确（非有效URL） |
+| 400 | `validation_error` | apiKey为空字符串 |
+| 400 | `api_key_invalid` | apiKey无效（API返回401） |
+| 400 | `base_url_invalid` | baseUrl无效（无法连接） |
+| 500 | `internal_error` | 验证过程中发生未知错误 |
+| 503 | `service_unavailable` | Provider API不可用（超时或限流） |
+
+**验证逻辑说明**：
+1. 后端调用 Provider 的 `/v1/models` 接口验证 apiKey 有效性
+2. Deepseek/OpenAI：`GET {baseUrl}/v1/models`，Header `Authorization: Bearer {apiKey}`
+3. Anthropic：使用预设模型列表（Anthropic 可能没有 models 接口）
+4. 验证成功后返回该 Provider 的可用模型列表（过滤弃用模型）
+5. 前端收到可用模型列表后更新下拉框，用户选择具体模型
+
+**各 Provider 可用模型列表定义**：
+
+| Provider | 可用模型 | 弃用模型 |
+|----------|---------|---------|
+| Deepseek | `deepseek-v4-flash`、`deepseek-v4-pro` | `deepseek-chat`（2026/07/24弃用）、`deepseek-reasoner`（2026/07/24弃用） |
+| OpenAI | `gpt-4o-mini`、`gpt-4o`、`o1-mini`、`o1-preview` | `gpt-3.5-turbo` |
+| Anthropic | `claude-3-5-haiku`、`claude-3-5-sonnet`、`claude-3-opus` | 无 |
+
+---
+
+### GET /api/v1/auth/models
+
+**用途**：获取Provider的可用模型列表（静态数据，前端可选调用）
+**鉴权**：不需要
+
+**查询参数**：
+```
+provider: string (必填，枚举：openai | anthropic | deepseek)
+```
+
+**成功响应** (200)：
+```json
+{
+  "data": {
+    "provider": "deepseek",
+    "models": [
+      {
+        "id": "deepseek-v4-flash",
+        "name": "Deepseek V4 Flash",
+        "status": "active",
+        "recommended": true,
+        "cost": "¥0.001/1K tokens（输入）",
+        "description": "默认模型，性能足够，成本最低"
+      },
+      {
+        "id": "deepseek-v4-pro",
+        "name": "Deepseek V4 Pro",
+        "status": "active",
+        "recommended": false,
+        "cost": "¥0.002/1K tokens（输入）",
+        "description": "高性能模型，复杂任务"
+      },
+      {
+        "id": "deepseek-chat",
+        "name": "Deepseek Chat",
+        "status": "deprecated",
+        "deprecatedDate": "2026/07/24",
+        "description": "已弃用，不建议使用"
+      }
+    ]
+  },
+  "message": "success"
+}
+```
+
+**错误响应**：
+
+| HTTP状态码 | error字段 | 触发条件 |
+|------------|-----------|---------|
+| 400 | `validation_error` | provider不在枚举值范围内 |
+| 500 | `internal_error` | 查询失败 |
+
+**说明**：
+- 此接口提供静态模型列表数据，前端可在 Provider 选择后调用获取完整模型信息
+- 模型列表包含状态、推荐度、成本、描述等详细信息
+- 弃用模型会标注 `status: "deprecated"` 和弃用日期
+
+---
+
 ### POST /api/v1/auth/config
 
 **用途**：保存LLM配置（provider、base_url、api_key、model）
@@ -48,7 +167,7 @@ Authorization: Bearer {CRON_SECRET}
   "provider": "string",        // 必填，枚举值：openai | anthropic | deepseek
   "baseUrl": "string",         // 必填，API基础URL，如：https://api.deepseek.com
   "apiKey": "string",          // 必填，API密钥
-  "model": "string"            // 必填，模型名称，如：deepseek-chat
+  "model": "string"            // 必填，模型名称，如：deepseek-v4-flash
 }
 ```
 
@@ -60,7 +179,9 @@ Authorization: Bearer {CRON_SECRET}
     "provider": "deepseek",
     "baseUrl": "https://api.deepseek.com",
     "apiKey": "sk-xxx",
-    "model": "deepseek-chat",
+    "model": "deepseek-v4-flash",
+    "validatedAt": "2024-01-15T08:30:00Z",
+    "availableModels": ["deepseek-v4-flash", "deepseek-v4-pro"],
     "updatedAt": "2024-01-15T08:30:00Z"
   },
   "message": "LLM配置已保存"
@@ -75,7 +196,15 @@ Authorization: Bearer {CRON_SECRET}
 | 400 | `validation_error` | baseUrl格式不正确（非有效URL） |
 | 400 | `validation_error` | apiKey为空字符串 |
 | 400 | `validation_error` | model为空字符串 |
+| 400 | `model_not_available` | model不在该Provider的可用模型列表中 |
 | 500 | `internal_error` | Supabase写入失败 |
+
+**保存逻辑说明**：
+1. 前端应先调用 `/api/v1/auth/config/validate` 验证配置并获取可用模型列表
+2. 用户从可用模型列表中选择具体模型
+3. 调用此接口保存配置，后端检查 model 是否在 validated 时返回的可用模型列表中
+4. 保存成功后，后端更新 LLMAdapter 实例，后续 LLM 调用使用新配置
+5. `validatedAt` 和 `availableModels` 字段由验证接口设置，保存时一并存储
 
 ---
 
@@ -92,7 +221,9 @@ Authorization: Bearer {CRON_SECRET}
     "provider": "deepseek",
     "baseUrl": "https://api.deepseek.com",
     "apiKey": "sk-xxx",
-    "model": "deepseek-chat",
+    "model": "deepseek-v4-flash",
+    "validatedAt": "2024-01-15T08:30:00Z",
+    "availableModels": ["deepseek-v4-flash", "deepseek-v4-pro"],
     "updatedAt": "2024-01-15T08:30:00Z"
   },
   "message": "success"
@@ -1071,6 +1202,28 @@ data: {"type":"error","error":"validation_error","message":"toolName不在支持
 ---
 
 ## 变更记录
+
+### v1.2（2026-05-11）
+**触发原因**：用户反馈，补充 LLM 配置验证接口和模型列表接口
+**修改内容**：
+1. **新增 `POST /api/v1/auth/config/validate` 接口**：
+   - 验证 LLM 配置有效性（调用 Provider 的 models 接口）
+   - 返回可用模型列表（过滤弃用模型）
+   - 错误码：`api_key_invalid`、`base_url_invalid`、`service_unavailable`
+2. **新增 `GET /api/v1/auth/models` 接口**：
+   - 返回 Provider 的静态模型列表（含状态、推荐度、成本、描述）
+   - 标注弃用模型和弃用日期
+3. **更新 `POST /api/v1/auth/config` 接口**：
+   - 响应新增 `validatedAt`、`availableModels` 字段
+   - 错误码新增 `model_not_available`
+   - 保存逻辑说明：验证后保存，model 检查可用性
+4. **更新 `GET /api/v1/auth/config` 接口**：
+   - 响应新增 `validatedAt`、`availableModels` 字段
+5. **新增各 Provider 可用模型列表定义**：
+   - Deepseek：`deepseek-v4-flash`（推荐）、`deepseek-v4-pro`；弃用：`deepseek-chat`、`deepseek-reasoner`
+   - OpenAI：`gpt-4o-mini`（推荐）、`gpt-4o`、`o1-mini`、`o1-preview`
+   - Anthropic：`claude-3-5-haiku`（推荐）、`claude-3-5-sonnet`、`claude-3-opus`
+**影响范围**：backend-architect 需实现验证接口和模型列表接口，frontend-developer 需实现配置表单（验证 → 选择模型 → 保存）
 
 ### v1.1（2026-05-11）
 **触发原因**：技术架构自审，补充流式输出和Thinking输出支持

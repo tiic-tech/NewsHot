@@ -1,6 +1,6 @@
 # 数据库 Schema
 > 数据库: Supabase PostgreSQL | 字符集: utf8mb4 | 扩展: pgvector（向量存储）
-> 版本: 1.1 | 多应用共享隔离策略: project_id + RLS
+> 版本: 1.2 | 多应用共享隔离策略: project_id + RLS
 
 ---
 
@@ -172,7 +172,7 @@ CREATE POLICY "projects_delete_service" ON projects FOR DELETE USING (false);
 
 ## 表：llm_config
 
-**用途**：LLM配置存储（支持OpenAI/Anthropic/Deepseek）
+**用途**：LLM配置存储（支持OpenAI/Anthropic/Deepseek，含验证状态和可用模型）
 
 | 字段名 | 类型 | 约束 | 默认值 | 说明 |
 |--------|------|------|--------|------|
@@ -181,7 +181,9 @@ CREATE POLICY "projects_delete_service" ON projects FOR DELETE USING (false);
 | provider | TEXT | NOT NULL | - | LLM提供商（openai/anthropic/deepseek） |
 | base_url | TEXT | NOT NULL | - | API基础URL |
 | api_key | TEXT | NOT NULL | - | API密钥（加密存储） |
-| model | TEXT | NOT NULL | - | 模型名称 |
+| model | TEXT | NOT NULL | - | 模型名称（如：deepseek-v4-flash） |
+| validated_at | TIMESTAMPTZ | NULL | NULL | 配置验证时间【新增】 |
+| available_models | TEXT[] | NULL | NULL | 可用模型列表（验证后返回）【新增】 |
 | created_at | TIMESTAMPTZ | NOT NULL | NOW() | 创建时间（UTC） |
 | updated_at | TIMESTAMPTZ | NOT NULL | NOW() | 更新时间（UTC，需触发器） |
 
@@ -190,6 +192,7 @@ CREATE POLICY "projects_delete_service" ON projects FOR DELETE USING (false);
 PRIMARY KEY (id)
 CREATE UNIQUE INDEX uk_llm_config_project ON llm_config (project_id);
 CREATE INDEX idx_llm_config_provider ON llm_config (provider);
+CREATE INDEX idx_llm_config_validated ON llm_config (validated_at);
 ```
 
 **关联关系**：
@@ -230,6 +233,11 @@ USING (
   )
 );
 ```
+
+**字段说明**：
+- `validated_at`：配置验证时间，NULL 表示未验证或验证失败
+- `available_models`：验证成功后返回的可用模型列表，前端下拉框数据源
+- 前端配置流程：填写 → 验证（设置 validated_at 和 available_models）→ 选择模型 → 保存
 
 ---
 
@@ -824,14 +832,24 @@ VALUES (
     '{"output_languages": ["en"]}'
 );
 
--- 创建默认LLM配置（使用环境变量）
-INSERT INTO llm_config (project_id, provider, base_url, api_key, model)
+-- 创建默认LLM配置（使用 Deepseek v4-flash）
+INSERT INTO llm_config (
+  project_id, 
+  provider, 
+  base_url, 
+  api_key, 
+  model, 
+  validated_at, 
+  available_models
+)
 VALUES (
     (SELECT id FROM projects WHERE name = 'newshot'),
     'deepseek',
     'https://api.deepseek.com',
     current_setting('appsettings.deepseek_api_key'),
-    'deepseek-chat'
+    'deepseek-v4-flash',
+    NOW(),
+    ARRAY['deepseek-v4-flash', 'deepseek-v4-pro']
 );
 ```
 
@@ -881,6 +899,21 @@ export function createSupabaseClientPublic() {
 
 ## 变更记录
 
+### v1.2（2026-05-11）
+**触发原因**：用户反馈，补充 LLM 配置验证状态和可用模型字段
+**修改内容**：
+1. **llm_config 表新增字段**：
+   - `validated_at`（TIMESTAMPTZ）：配置验证时间，NULL 表示未验证或验证失败
+   - `available_models`（TEXT[]）：可用模型列表，验证成功后返回
+2. **新增索引**：
+   - `idx_llm_config_validated`：验证时间索引，用于查询验证状态
+3. **初始化数据更新**：
+   - 默认模型改为 `deepseek-v4-flash`
+   - 初始化时设置 `validated_at` 和 `available_models`
+4. **字段说明补充**：
+   - 前端配置流程：填写 → 验证（设置 validated_at 和 available_models）→ 选择模型 → 保存
+**影响范围**：database-optimizer 需创建迁移脚本添加新字段，backend-architect 需在验证接口中设置 validated_at 和 available_models
+
 ### v1.1（2026-05-11）
 **触发原因**：技术架构自审，补充 Supabase 多应用共享数据隔离策略
 **修改内容**：
@@ -894,4 +927,4 @@ export function createSupabaseClientPublic() {
 
 ---
 
-> **Schema原则：类型精确，约束完整，索引有理由，关系清晰，RLS启用按project_id隔离。**
+> **Schema原则：类型精确，约束完整，索引有理由，关系清晰，RLS启用按project_id隔离，LLM配置含验证状态。**

@@ -1,5 +1,5 @@
 # 技术规格说明
-> 版本: 1.1 | 项目: NewsHot (Grabout Mind Record - AI新闻聚合平台)
+> 版本: 1.2 | 项目: NewsHot (Grabout Mind Record - AI新闻聚合平台)
 
 ---
 
@@ -16,7 +16,7 @@
 | Embedding | 阿里云百炼 text-embedding-v4 | 成本优化(¥0.0005/1K tokens)，中文友好，1024维 |
 | LLM | Deepseek（起点）+ OpenAI + Anthropic | 成本优化，多家支持降低风险，**支持流式输出和Thinking** |
 | 定时任务 | Vercel Cron Jobs | 云原生，可靠性高，无需进程持久化 |
-| 部署 | Vercel（全栈一体化） | 零运维部署，自动CI/CD，Edge Network |
+| 部署 | Vercel（全栈一体化）或 Docker（一键部署） | 零运维部署，自动CI/CD，Edge Network；Docker支持本地开发和私有部署 |
 | CI/CD | Vercel自动部署 + GitHub Actions验证 | Git推送自动触发，Preview验证 |
 
 ---
@@ -41,6 +41,178 @@
 4. **缓存系统改进**：更灵活的缓存控制策略，适合频繁更新的新闻数据
 5. **Vercel 完全兼容**：Vercel 对 Next.js 15 提供原生优化支持
 6. **社区生态完善**：15 版本文档、教程、示例代码更加完善
+
+---
+
+## LLM Provider 配置方案
+
+> **默认模型与动态配置设计**
+
+### 默认配置
+
+| Provider | 默认模型 | Base URL | 选型理由 |
+|----------|---------|---------|---------|
+| **Deepseek（默认）** | **deepseek-v4-flash** | `https://api.deepseek.com` | 成本最低，性能足够，支持 Thinking 输出 |
+| OpenAI | gpt-4o-mini | `https://api.openai.com` | 稳定性高，生态完善，但成本较高 |
+| Anthropic | claude-3-5-haiku | `https://api.anthropic.com` | Thinking 输出最完善，但成本最高 |
+
+### 各 Provider 可用模型列表
+
+#### Deepseek 模型列表
+
+| 模型名称 | 状态 | 说明 | 成本 |
+|---------|------|------|------|
+| **deepseek-v4-flash** | **推荐** | 默认模型，性能足够，成本最低 | ¥0.001/1K tokens（输入） |
+| deepseek-v4-pro | 推荐 | 高性能模型，复杂任务 | ¥0.002/1K tokens（输入） |
+| deepseek-chat | ⚠️ 弃用（2026/07/24） | 已弃用，不建议使用 | - |
+| deepseek-reasoner | ⚠️ 弃用（2026/07/24） | 已弃用，不建议使用 | - |
+
+**Deepseek Base URL 变体**：
+- OpenAI 兼容格式：`https://api.deepseek.com`（默认）
+- Anthropic 兼容格式：`https://api.deepseek.com/anthropic`（可选）
+
+#### OpenAI 模型列表
+
+| 模型名称 | 状态 | 说明 | 成本 |
+|---------|------|------|------|
+| gpt-4o-mini | 推荐 | 性价比最高，适合日常任务 | $0.15/1M tokens（输入） |
+| gpt-4o | 推荐 | 高性能模型，复杂任务 | $2.50/1M tokens（输入） |
+| o1-mini | 推荐 | Thinking 模型，推理能力强 | $1.50/1M tokens（输入） |
+| o1-preview | 可选 | Thinking 模型，深度推理 | $15/1M tokens（输入） |
+| gpt-3.5-turbo | ⚠️ 弃用 | 已弃用，不建议使用 | - |
+
+#### Anthropic 模型列表
+
+| 模型名称 | 状态 | 说明 | 成本 |
+|---------|------|------|------|
+| claude-3-5-haiku | 推荐 | 性价比最高，速度快 | $0.25/1M tokens（输入） |
+| claude-3-5-sonnet | 推荐 | 平衡性能与成本 | $3/1M tokens（输入） |
+| claude-3-opus | 可选 | 最高性能，复杂任务 | $15/1M tokens（输入） |
+
+### 前端配置流程设计
+
+```
+用户填写配置流程：
+
+1. 前端表单输入
+   - Provider 选择（下拉：deepseek/openai/anthropic）
+   - Base URL 输入（预设值 + 可修改）
+   - API Key 输入（密码框）
+
+2. 点击"验证配置"按钮
+   - 调用 POST /api/v1/auth/config/validate
+   - 后端发起验证请求（调用 LLM API 的 models 接口）
+   - 返回验证结果 + 可用模型列表
+
+3. 验证成功后
+   - 前端下拉框更新为该 Provider 的可用模型列表
+   - 用户选择具体模型
+
+4. 点击"保存配置"按钮
+   - 调用 POST /api/v1/auth/config
+   - 后端保存配置到 Supabase
+   - 更新 LLMAdapter 实例
+
+5. 配置生效
+   - 后续 LLM 调用使用新配置
+```
+
+### 配置验证机制
+
+```typescript
+// lib/llm-validator.ts
+
+interface ValidateConfigRequest {
+  provider: 'openai' | 'anthropic' | 'deepseek'
+  baseUrl: string
+  apiKey: string
+}
+
+interface ValidateConfigResponse {
+  valid: boolean
+  provider: string
+  availableModels: string[]
+  message: string
+}
+
+export async function validateLLMConfig(
+  config: ValidateConfigRequest
+): Promise<ValidateConfigResponse> {
+  try {
+    // 调用 Provider 的 models 接口验证配置
+    const modelsUrl = getModelsUrl(config.provider, config.baseUrl)
+    
+    const response = await fetch(modelsUrl, {
+      method: 'GET',
+      headers: getAuthHeaders(config.provider, config.apiKey)
+    })
+    
+    if (!response.ok) {
+      return {
+        valid: false,
+        provider: config.provider,
+        availableModels: [],
+        message: `验证失败：HTTP ${response.status}`
+      }
+    }
+    
+    const data = await response.json()
+    const availableModels = extractModels(data, config.provider)
+    
+    return {
+      valid: true,
+      provider: config.provider,
+      availableModels,
+      message: '验证成功，可用模型已更新'
+    }
+  } catch (error: any) {
+    return {
+      valid: false,
+      provider: config.provider,
+      availableModels: [],
+      message: `验证失败：${error.message}`
+    }
+  }
+}
+
+function getModelsUrl(provider: string, baseUrl: string): string {
+  switch (provider) {
+    case 'deepseek':
+    case 'openai':
+      return `${baseUrl}/v1/models`
+    case 'anthropic':
+      return `${baseUrl}/v1/models`  // Anthropic 可能需要特殊处理
+    default:
+      throw new Error(`Unsupported provider: ${provider}`)
+  }
+}
+
+function getAuthHeaders(provider: string, apiKey: string): HeadersInit {
+  switch (provider) {
+    case 'deepseek':
+    case 'openai':
+      return { 'Authorization': `Bearer ${apiKey}` }
+    case 'anthropic':
+      return {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01'
+      }
+    default:
+      throw new Error(`Unsupported provider: ${provider}`)
+  }
+}
+
+function extractModels(data: any, provider: string): string[] {
+  // OpenAI/Deepseek 格式：data.data[].id
+  // Anthropic 格式可能不同
+  if (provider === 'anthropic') {
+    // Anthropic 可能没有 models 接口，返回预设列表
+    return ['claude-3-5-haiku', 'claude-3-5-sonnet', 'claude-3-opus']
+  }
+  
+  return data.data?.map((model: any) => model.id) || []
+}
+```
 
 ---
 
@@ -370,6 +542,342 @@ VALUES (
 
 ---
 
+## Docker 一键部署方案
+
+> **为 public repo 提供快速部署能力，方便开发者快速部署**
+
+### 部署架构对比
+
+| 部署方式 | 适用场景 | 优点 | 缺点 |
+|---------|---------|------|------|
+| **Vercel（推荐）** | 生产部署、零运维 | 自动CI/CD、Edge Network、免费额度 | 依赖云服务 |
+| **Docker** | 本地开发、私有部署 | 完全控制、离线运行、一键部署 | 需运维、成本较高 |
+| **混合方案** | 生产 + 本地测试 | 灵活性最高 | 配置复杂 |
+
+### Docker 部署架构
+
+```
+Docker Compose 架构：
+
+┌─────────────────────────────────────────┐
+│  Docker Network: newshot-network        │
+├─────────────────────────────────────────┤
+│                                         │
+│  ┌─────────────────────────────────┐   │
+│  │  newshot-app (Next.js)          │   │
+│  │  Port: 3000                     │   │
+│  │  Mode: standalone               │   │
+│  └─────────────────────────────────┘   │
+│                                         │
+│  外部服务（云服务，推荐）               │
+│  ├─ Supabase Cloud                     │
+│  ├─ Upstash Redis Cloud                │
+│  └─ Deepseek/OpenAI/Anthropic API      │
+│                                         │
+│  可选：本地服务（不推荐）               │
+│  ├─ supabase-local (容器)              │
+│  ├─ redis-local (容器)                 │
+│                                         │
+└─────────────────────────────────────────┘
+```
+
+### 推荐方案：云服务 + Docker（零运维）
+
+> **强烈推荐使用云服务 Supabase/Redis，Docker 仅运行 Next.js 应用**
+
+**优点**：
+- 零运维：无需管理数据库/缓存容器
+- 数据持久化：云服务保证数据安全
+- 成本优化：使用免费额度
+- 快速部署：只需一个 Dockerfile
+
+### Dockerfile（Next.js standalone）
+
+```dockerfile
+# Dockerfile
+
+# Stage 1: 构建阶段
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# 安装依赖
+COPY package.json package-lock.json ./
+RUN npm ci
+
+# 复制源码
+COPY . .
+
+# 构建应用（standalone 模式）
+ENV NEXT_TELEMETRY_DISABLED=1
+RUN npm run build
+
+# Stage 2: 运行阶段
+FROM node:20-alpine AS runner
+
+WORKDIR /app
+
+# 设置环境变量
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+
+# 复制构建产物
+COPY --from=builder /app/public ./public
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+
+# 暴露端口
+EXPOSE 3000
+
+# 设置端口
+ENV PORT=3000
+ENV HOSTNAME="0.0.0.0"
+
+# 启动应用
+CMD ["node", "server.js"]
+```
+
+### docker-compose.yml（云服务方案）
+
+```yaml
+# docker-compose.yml
+
+version: '3.8'
+
+services:
+  newshot-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: newshot-app
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env.docker
+    restart: unless-stopped
+    networks:
+      - newshot-network
+
+networks:
+  newshot-network:
+    driver: bridge
+```
+
+### docker-compose.yml（本地服务方案 - 不推荐）
+
+```yaml
+# docker-compose.local.yml（不推荐，仅供特殊场景）
+
+version: '3.8'
+
+services:
+  newshot-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: newshot-app
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env.docker.local
+    depends_on:
+      - supabase-db
+      - redis
+    restart: unless-stopped
+    networks:
+      - newshot-network
+
+  supabase-db:
+    image: supabase/postgres:15.1.0.147
+    container_name: newshot-supabase
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_PASSWORD: your-super-secret-password
+      POSTGRES_DB: postgres
+    volumes:
+      - supabase-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - newshot-network
+
+  redis:
+    image: upstash/redis:latest
+    container_name: newshot-redis
+    ports:
+      - "6379:6379"
+    environment:
+      REDIS_PASSWORD: your-redis-password
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    networks:
+      - newshot-network
+
+volumes:
+  supabase-data:
+  redis-data:
+
+networks:
+  newshot-network:
+    driver: bridge
+```
+
+### .env.docker.example（云服务配置）
+
+```bash
+# .env.docker.example
+
+# =====================
+# Supabase 配置（云服务）
+# =====================
+SUPABASE_URL=https://xxx.supabase.co
+SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+SUPABASE_SERVICE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+SUPABASE_APP_ID=newshot
+
+# =====================
+# Upstash Redis 配置（云服务）
+# =====================
+UPSTASH_REST_URL=https://xxx.upstash.io
+UPSTASH_REST_TOKEN=xxx
+
+# =====================
+# 阿里云百炼 Embedding API
+# =====================
+BAILIAN_API_KEY=sk-xxx
+BAILIAN_ENDPOINT=https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding-v4
+
+# =====================
+# LLM API Keys
+# =====================
+DEEPSEEK_API_KEY=sk-xxx
+OPENAI_API_KEY=sk-xxx
+ANTHROPIC_API_KEY=sk-xxx
+
+# =====================
+# LLM 配置（默认使用 Deepseek）
+# =====================
+LLM_PROVIDER=deepseek
+LLM_MODEL=deepseek-v4-flash
+LLM_BASE_URL=https://api.deepseek.com
+
+# =====================
+# Vercel Cron Jobs 安全
+# =====================
+CRON_SECRET=xxx
+
+# =====================
+# follow-builders Feed URL
+# =====================
+FEED_X_URL=https://xxx/feed-x.json
+FEED_PODCASTS_URL=https://xxx/feed-podcasts.json
+FEED_BLOGS_URL=https://xxx/feed-blogs.json
+
+# =====================
+# 前端配置
+# =====================
+NEXT_PUBLIC_APP_PATH=
+```
+
+### next.config.js 配置（standalone 模式）
+
+```javascript
+// next.config.js
+
+const appPath = process.env.NEXT_PUBLIC_APP_PATH
+
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  output: 'standalone',  // Docker 部署必需
+  basePath: appPath ? `/${appPath}` : '',
+  // 其他配置...
+}
+
+module.exports = nextConfig
+```
+
+### Docker 部署步骤
+
+```bash
+# 1. 克隆项目
+git clone https://github.com/your-repo/newshot.git
+cd newshot
+
+# 2. 创建环境变量文件
+cp .env.docker.example .env.docker
+
+# 3. 编辑环境变量（填写真实的 API Keys）
+nano .env.docker
+
+# 4. 构建并启动
+docker-compose up -d --build
+
+# 5. 查看日志
+docker-compose logs -f newshot-app
+
+# 6. 访问应用
+open http://localhost:3000
+
+# 7. 停止应用
+docker-compose down
+
+# 8. 停止并清理数据（可选）
+docker-compose down -v
+```
+
+### Docker 部署文档（README.md 补充）
+
+```markdown
+## Docker 一键部署
+
+### 快速部署（推荐云服务）
+
+1. **准备云服务账号**：
+   - Supabase（免费）：https://supabase.com
+   - Upstash Redis（免费）：https://upstash.com
+   - Deepseek API（按量付费）：https://platform.deepseek.com
+
+2. **克隆项目**：
+   ```bash
+   git clone https://github.com/your-repo/newshot.git
+   cd newshot
+   ```
+
+3. **配置环境变量**：
+   ```bash
+   cp .env.docker.example .env.docker
+   # 编辑 .env.docker，填写真实的 API Keys
+   ```
+
+4. **一键启动**：
+   ```bash
+   docker-compose up -d --build
+   ```
+
+5. **访问应用**：
+   - http://localhost:3000
+
+### 本地服务部署（不推荐）
+
+如果需要完全离线部署，可以使用本地服务：
+```bash
+docker-compose -f docker-compose.local.yml up -d --build
+```
+
+**注意**：本地服务需要手动配置 Supabase 和 Redis，运维成本较高。
+
+### 常见问题
+
+**Q: 为什么推荐云服务而非本地容器？**
+A: 云服务零运维、数据持久化、免费额度充足。本地容器需要手动管理数据库、备份、升级等。
+
+**Q: Docker 部署与 Vercel 部署的区别？**
+A: Vercel 部署零运维、自动CI/CD、Edge Network；Docker 部署完全控制、离线运行、私有部署。
+```
+
+---
+
 ## 项目目录结构
 
 ### 全栈结构（Next.js App Router）
@@ -391,7 +899,9 @@ project-root/
 │   └── api/                      # API Route Handlers
 │       ├── v1/                   # API v1版本
 │       │   ├── auth/             # LLM配置相关
-│       │   │   └── config/route.ts
+│       │   │   ├── config/route.ts           # GET/POST 配置
+│       │   │   └── config/validate/route.ts  # POST 验证配置【新增】
+│       │   │   └── models/route.ts           # GET 模型列表【新增】
 │       │   ├── sources/          # 数据源相关
 │       │   │   ├── route.ts      # GET /api/v1/sources
 │       │   │   └── [id]/route.ts # GET /api/v1/sources/:id
@@ -416,6 +926,7 @@ project-root/
 │   ├── redis.ts                  # Upstash Redis Client
 │   ├── embedding.ts              # 阿里云百炼 Embedding Service
 │   ├── llm-adapter.ts            # LLM适配器（支持流式+Thinking）
+│   ├── llm-validator.ts          # LLM配置验证器【新增】
 │   ├── fetcher.ts                # Feed抓取服务
 │   ├── processor.ts              # Processor服务（cluster聚合+摘要生成）
 │   ├── types/                    # TypeScript类型定义
@@ -434,6 +945,8 @@ project-root/
 │   │   ├── cluster-card.tsx      # Cluster卡片组件
 │   │   ├── chatbot-input.tsx     # Chatbot输入框组件
 │   │   ├── thinking-display.tsx  # Thinking显示组件【新增】
+│   │   ├── llm-config-form.tsx   # LLM配置表单组件【新增】
+│   │   └── model-selector.tsx    # 模型选择下拉组件【新增】
 │   │   └── skeleton.tsx          # Skeleton加载组件
 │   └── layout/                   # 布局组件
 │       ├── header.tsx
@@ -443,12 +956,17 @@ project-root/
 │   ├── use-draft.ts              # draft状态管理
 │   ├── use-tools.ts              # Tools调用
 │   ├── use-tools-stream.ts       # Tools流式调用【新增】
-│   └── use-config.ts             # LLM配置管理
+│   ├── use-config.ts             # LLM配置管理
+│   └── use-llm-validation.ts     # LLM配置验证Hook【新增】
 ├── styles/                       # 样式文件
 │   └── globals.css               # 全局样式（Tailwind）
 ├── public/                       # 静态资源
 ├── vercel.json                   # Vercel配置（Cron定义）
+├── Dockerfile                    # Docker部署文件【新增】
+├── docker-compose.yml            # Docker Compose配置【新增】
+├── docker-compose.local.yml      # 本地服务Docker配置【新增】
 ├── .env.local                    # 本地环境变量（用户填写）
+├── .env.docker.example           # Docker环境变量模板【新增】
 ├── .env.example                  # 环境变量模板
 ├── package.json
 ├── tsconfig.json
@@ -474,6 +992,8 @@ project-root/
 | 重试策略 | 最多3次，指数退避（5min/15min/30min） |
 | **流式响应格式** | **SSE（text/event-stream），事件类型：thinking/content/done** |
 | **Thinking显示** | **可选字段，前端可折叠显示推理过程** |
+| **默认LLM模型** | **deepseek-v4-flash（Deepseek最新推荐模型）** |
+| **Docker输出模式** | **standalone（Next.js独立部署）** |
 
 ---
 
@@ -513,7 +1033,7 @@ ANTHROPIC_API_KEY=sk-xxx
 # LLM配置（前端可动态修改）
 # =====================
 LLM_PROVIDER=deepseek           # 默认provider: deepseek | openai | anthropic
-LLM_MODEL=deepseek-chat         # 默认模型
+LLM_MODEL=deepseek-v4-flash     # 默认模型（更新为 v4-flash）【修改】
 LLM_BASE_URL=https://api.deepseek.com  # 默认base_url
 
 # =====================
@@ -577,6 +1097,7 @@ const appPath = process.env.NEXT_PUBLIC_APP_PATH
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  output: 'standalone',  // Docker 部署必需【新增】
   basePath: appPath ? `/${appPath}` : '',
   // 其他配置...
 }
@@ -790,7 +1311,7 @@ export function getDefaultLLMConfig(): LLMConfig {
     provider: (process.env.LLM_PROVIDER as LLMProvider) || 'deepseek',
     baseUrl: process.env.LLM_BASE_URL || 'https://api.deepseek.com',
     apiKey: process.env.DEEPSEEK_API_KEY || '',
-    model: process.env.LLM_MODEL || 'deepseek-chat'
+    model: process.env.LLM_MODEL || 'deepseek-v4-flash'  // 更新为 v4-flash【修改】
   }
 }
 ```
@@ -799,7 +1320,8 @@ export function getDefaultLLMConfig(): LLMConfig {
 
 - **存储位置**：Supabase `llm_config` 表（单行记录，project_id关联）
 - **前端配置UI**：设置页面提供表单（provider下拉、base_url输入、api_key输入、model选择）
-- **配置生效**：点击"Apply"按钮后调用 `POST /api/v1/auth/config` 保存
+- **配置验证**：点击"验证配置"按钮后调用 `POST /api/v1/auth/config/validate`
+- **配置生效**：验证成功后选择模型，点击"保存配置"按钮调用 `POST /api/v1/auth/config`
 
 ---
 
@@ -1164,9 +1686,9 @@ jobs:
 
 | Aspect | Requirement | Implementation |
 |--------|-------------|----------------|
-| Secrets管理 | API Keys不暴露在代码中 | Vercel环境变量存储 |
+| Secrets管理 | API Keys不暴露在代码中 | Vercel环境变量存储 / Docker .env.docker |
 | Cron请求鉴权 | 验证请求来源 | `CRON_SECRET`验证 |
-| HTTPS | 加密传输 | Vercel自动HTTPS |
+| HTTPS | 加密传输 | Vercel自动HTTPS / Docker需配置 |
 | API限流 | 后续扩展 | Vercel Edge Middleware |
 | 认证 | MVP无认证 | 单用户，后续扩展 |
 | **数据隔离** | **多应用共享隔离** | **project_id + RLS策略** |
@@ -1179,11 +1701,37 @@ jobs:
 2. **类型检查**：`npm run typecheck`（提交前必须通过）
 3. **Lint检查**：`npm run lint`（提交前必须通过）
 4. **构建验证**：`npm run build`（提交前必须通过）
-5. **部署验证**：Vercel Preview URL验证后合并
+5. **部署验证**：Vercel Preview URL验证后合并 / Docker本地测试
 
 ---
 
 ## 变更记录
+
+### v1.2（2026-05-11）
+**触发原因**：用户反馈，补充 Deepseek API 配置和 Docker 一键部署方案
+**修改内容**：
+1. **LLM Provider 配置方案**（新增章节）：
+   - 默认模型更新为 `deepseek-v4-flash`（文档中是 `deepseek-chat`）
+   - 新增各 Provider 可用模型列表（Deepseek/OpenAI/Anthropic）
+   - 新增前端配置流程设计（填写 → 验证 → 选择模型 → 保存）
+   - 新增配置验证机制代码示例
+2. **Docker 一键部署方案**（新增章节）：
+   - 新增 Dockerfile（Next.js standalone 模式）
+   - 新增 docker-compose.yml（云服务方案，推荐）
+   - 新增 docker-compose.local.yml（本地服务方案，不推荐）
+   - 新增 .env.docker.example
+   - 新增 next.config.js `output: 'standalone'` 配置
+   - 新增 Docker 部署步骤和文档
+3. **项目目录结构**（更新）：
+   - 新增 `llm-validator.ts`、`llm-config-form.tsx`、`model-selector.tsx` 组件
+   - 新增 `use-llm-validation.ts` Hook
+   - 新增 Docker 相关文件
+4. **环境变量配置**（更新）：
+   - 默认模型更新为 `deepseek-v4-flash`
+5. **全局规范**（新增）：
+   - 默认 LLM 模型：`deepseek-v4-flash`
+   - Docker 输出模式：`standalone`
+**影响范围**：backend-architect 需实现验证接口，frontend-developer 需实现配置表单，devops-automator 需创建 Docker 配置文件
 
 ### v1.1（2026-05-11）
 **触发原因**：技术架构自审，解决三个核心问题
@@ -1198,4 +1746,4 @@ jobs:
 
 ---
 
-> **核心原则：零运维部署，全栈一体化，异步管道优化，成本控制优先，多应用共享隔离。**
+> **核心原则：零运维部署，全栈一体化，异步管道优化，成本控制优先，多应用共享隔离，Docker一键部署，Deepseek默认模型。**
