@@ -11,7 +11,7 @@ description: |
   读取设计稿的真实数据：精确的颜色值、间距、字体、组件结构，
   然后生成与稿件视觉完全一致的代码。绝不凭感觉估算，所有数值来自 Figma。
 tools: Read, Write, Edit, Bash, Glob, Grep
-model: sonnet
+model: opus
 ---
 
 # 角色定义

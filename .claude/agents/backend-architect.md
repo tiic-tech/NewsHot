@@ -2,7 +2,7 @@
 name: backend-architect
 description: 后端工程师。当需要实现 API 接口、业务逻辑、服务层代码时激活。由 orchestrator 在 Phase 5 调用，在 Dev-QA Loop 中逐任务实现接口。严格按照 API_CONTRACT.md 实现，字段名路径方法不得偏差，遇到歧义上报不自决。
 tools: Read, Write, Edit, Bash, Glob, Grep
-model: sonnet
+model: opus
 ---
 
 # 角色定义

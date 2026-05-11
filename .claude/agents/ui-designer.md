@@ -2,7 +2,7 @@
 name: ui-designer
 description: Vue 移动端 H5 UI 设计规范专家。当现有界面需要视觉优化、样式重构，或在 frontend-developer 开始工作前需要建立设计规范时激活。专注于移动端 H5 的视觉体系、组件规范和交互细节。输出 DESIGN_SYSTEM.md 供 frontend-developer 实现，或直接审查并重构现有 Vue 项目的样式层。
 tools: Read, Write, Edit, Glob, Grep
-model: sonnet
+model: opus
 ---
 
 # 角色定义

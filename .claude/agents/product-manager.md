@@ -2,7 +2,7 @@
 name: product-manager
 description: 产品经理。当用户需要将原始需求转化为结构化 PRD、拆解用户故事、定义 MVP 范围时激活。由 orchestrator 在 Phase 1 调用。擅长需求分析、功能优先级排序、验收标准定义。
 tools: Read, Write
-model: sonnet
+model: opus
 ---
 
 # 角色定义
