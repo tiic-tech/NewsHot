@@ -1,5 +1,5 @@
 # API 接口契约
-> 版本: 1.0 | 基础路径: /api/v1
+> 版本: 1.1 | 基础路径: /api/v1
 > 本文件是唯一权威接口定义，前后端实现必须严格遵守，不得擅自修改
 
 ---
@@ -462,7 +462,7 @@ pageSize: number (可选，默认20)
 
 ### POST /api/v1/tools
 
-**用途**：Chatbot调用Tool执行操作（统一入口）
+**用途**：Chatbot调用Tool执行操作（统一入口，一次性响应）
 **鉴权**：不需要
 
 **请求体** (`Content-Type: application/json`)：
@@ -478,6 +478,7 @@ pageSize: number (可选，默认20)
 {
   "data": {
     "result": { ... },          // Tool执行结果（根据Tool不同而不同）
+    "thinking": "string (optional)",  // LLM思考过程【新增，可选】
     "message": "string"
   },
   "message": "success"
@@ -494,6 +495,100 @@ pageSize: number (可选，默认20)
 | 404 | `resource_not_found` | 操作的资源不存在（如cluster/item/draft） |
 | 409 | `operation_conflict` | 操作冲突（如合并不相关的cluster） |
 | 500 | `internal_error` | Tool执行失败 |
+
+---
+
+### POST /api/v1/tools/stream 【新增】
+
+**用途**：Chatbot调用Tool执行操作（流式响应，支持实时输出和Thinking）
+**鉴权**：不需要
+**响应格式**：`text/event-stream`（SSE）
+
+**请求体** (`Content-Type: application/json`)：
+```json
+{
+  "toolName": "string",         // 必填，Tool名称（见下方14个Tools列表）
+  "params": { ... }             // 必填，Tool参数（根据Tool不同而不同）
+}
+```
+
+**SSE响应格式**：
+
+```
+Content-Type: text/event-stream
+Cache-Control: no-cache
+Connection: keep-alive
+
+event: thinking
+data: {"type":"thinking","thinking":"正在分析cluster数据...","timestamp":"2024-01-15T08:30:00Z"}
+
+event: content
+data: {"type":"content","content":"Cluster 1的核心洞察是...","timestamp":"2024-01-15T08:30:01Z"}
+
+event: content
+data: {"type":"content","content":"关于OpenAI的最新动态...","timestamp":"2024-01-15T08:30:02Z"}
+
+event: done
+data: {"type":"done","message":"完成","totalTokens":150,"thinkingTokens":50}
+```
+
+**事件类型说明**：
+
+| 事件类型 | 字段 | 说明 |
+|---------|------|------|
+| `thinking` | `type`, `thinking`, `timestamp` | LLM思考过程（Deepseek/Anthropic提供） |
+| `content` | `type`, `content`, `timestamp` | 增量输出内容 |
+| `done` | `type`, `message`, `totalTokens`, `thinkingTokens` | 完成事件，包含token统计 |
+
+**前端调用示例**：
+
+```typescript
+// 前端 EventSource 调用
+const eventSource = new EventSource('/api/v1/tools/stream', {
+  headers: { 'Content-Type': 'application/json' }
+})
+
+eventSource.onmessage = (event) => {
+  const data = JSON.parse(event.data)
+  
+  switch (data.type) {
+    case 'thinking':
+      // 渲染思考过程（可折叠显示）
+      appendThinking(data.thinking)
+      break
+    case 'content':
+      // 渲染增量内容
+      appendToChat(data.content)
+      break
+    case 'done':
+      // 完成处理
+      console.log(`总tokens: ${data.totalTokens}, thinking tokens: ${data.thinkingTokens}`)
+      eventSource.close()
+      break
+  }
+}
+
+eventSource.onerror = (error) => {
+  console.error('SSE连接错误:', error)
+  eventSource.close()
+}
+```
+
+**错误响应**（SSE错误事件）：
+
+```
+event: error
+data: {"type":"error","error":"validation_error","message":"toolName不在支持的Tool列表中"}
+```
+
+| error字段 | 触发条件 |
+|-----------|---------|
+| `validation_error` | toolName不在支持的Tool列表中 |
+| `validation_error` | params缺少必填字段 |
+| `validation_error` | params字段类型不正确 |
+| `resource_not_found` | 操作的资源不存在 |
+| `operation_conflict` | 操作冲突 |
+| `internal_error` | Tool执行失败 |
 
 ---
 
@@ -972,6 +1067,20 @@ pageSize: number (可选，默认20)
 |------------|-----------|---------|
 | 503 | `service_unavailable` | Supabase连接失败 |
 | 503 | `service_unavailable` | Redis连接失败 |
+
+---
+
+## 变更记录
+
+### v1.1（2026-05-11）
+**触发原因**：技术架构自审，补充流式输出和Thinking输出支持
+**修改内容**：
+1. 新增 `POST /api/v1/tools/stream` SSE流式接口定义
+2. `POST /api/v1/tools` 响应新增 `thinking` 字段（可选）
+3. SSE响应格式定义（thinking/content/done 三种事件类型）
+4. SSE错误事件格式定义
+5. 前端调用示例代码
+**影响范围**：backend-architect 需实现 SSE 接口，frontend-developer 需实现 EventSource 调用
 
 ---
 

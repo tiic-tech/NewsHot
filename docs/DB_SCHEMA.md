@@ -1,5 +1,6 @@
 # 数据库 Schema
 > 数据库: Supabase PostgreSQL | 字符集: utf8mb4 | 扩展: pgvector（向量存储）
+> 版本: 1.1 | 多应用共享隔离策略: project_id + RLS
 
 ---
 
@@ -15,6 +16,110 @@
 
 ---
 
+## Supabase 多应用共享隔离策略
+
+> **问题背景**：Supabase 免费账户限制 2 个 Project，需要与其他应用共享同一 Project 并保证数据隔离。
+
+### 隔离方案：project_id + RLS 策略
+
+**核心设计**：
+1. 所有表通过 `project_id` 字段关联到 `projects` 表
+2. RLS（Row Level Security）策略按 `project_id` 强制隔离数据
+3. 应用标识通过环境变量 `SUPABASE_APP_ID` 或 HTTP Header `x-app-id` 传递
+4. Supabase Client 创建时注入应用标识
+
+**隔离效果**：
+- 查询自动过滤：只返回当前应用的数据
+- 插入自动绑定：自动关联当前应用的 project_id
+- 更新/删除保护：只能操作当前应用的数据
+- 跨应用泄露防护：即使代码错误也不会访问其他应用数据
+
+### RLS 策略模板
+
+```sql
+-- Supabase RLS 策略通过 current_setting('request.headers.x-app-id') 获取应用标识
+-- 前端请求时注入 x-app-id header，后端使用 Service Key 绑过 RLS
+
+-- 通用的 RLS 策略模板（适用于所有业务表）
+-- SELECT 策略：只允许访问自己应用的数据
+CREATE POLICY "{table}_select_app" ON {table} 
+FOR SELECT 
+USING (
+  project_id = (
+    SELECT id FROM projects 
+    WHERE name = current_setting('request.headers.x-app-id', true)
+  )
+);
+
+-- INSERT 策略：只能插入自己应用的数据
+CREATE POLICY "{table}_insert_app" ON {table} 
+FOR INSERT 
+WITH CHECK (
+  project_id = (
+    SELECT id FROM projects 
+    WHERE name = current_setting('request.headers.x-app-id', true)
+  )
+);
+
+-- UPDATE 策略：只能更新自己应用的数据
+CREATE POLICY "{table}_update_app" ON {table} 
+FOR UPDATE 
+USING (
+  project_id = (
+    SELECT id FROM projects 
+    WHERE name = current_setting('request.headers.x-app-id', true)
+  )
+);
+
+-- DELETE 策略：只能删除自己应用的数据
+CREATE POLICY "{table}_delete_app" ON {table} 
+FOR DELETE 
+USING (
+  project_id = (
+    SELECT id FROM projects 
+    WHERE name = current_setting('request.headers.x-app-id', true)
+  )
+);
+```
+
+### 应用标识传递方式
+
+**方式1：HTTP Header（推荐）**
+
+```typescript
+// lib/supabase.ts
+
+const APP_ID = process.env.SUPABASE_APP_ID || 'newshot'
+
+export function createSupabaseClientPublic() {
+  return createClient(
+    process.env.SUPABASE_URL!,
+    process.env.SUPABASE_ANON_KEY!,
+    {
+      global: {
+        headers: {
+          'x-app-id': APP_ID    // HTTP Header 传递应用标识
+        }
+      }
+    }
+  )
+}
+```
+
+**方式2：JWT Claims（可选）**
+
+```sql
+-- 如果使用 Supabase Auth，可以在 JWT claims 中注入 project_id
+-- RLS 策略通过 JWT claims 获取 project_id
+CREATE POLICY "{table}_select_jwt" ON {table} 
+FOR SELECT 
+USING (
+  project_id = current_setting('request.jwt.claims.project_id', true)::UUID
+);
+```
+
+---
+
 ## 启用pgvector扩展
 
 ```sql
@@ -26,12 +131,12 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 ## 表：projects
 
-**用途**：项目配置表（MVP单Project，后续扩展多Project）
+**用途**：项目配置表（多应用共享的核心表，每个应用一条记录）
 
 | 字段名 | 类型 | 约束 | 默认值 | 说明 |
 |--------|------|------|--------|------|
 | id | UUID | PK, DEFAULT gen_random_uuid() | - | 主键 |
-| name | TEXT | NOT NULL, UNIQUE | - | 项目名称（如：AI-project） |
+| name | TEXT | NOT NULL, UNIQUE | - | 项目名称（应用标识，如：newshot） |
 | domain | TEXT | NOT NULL | - | 项目领域（如：AI） |
 | description | TEXT | NULL | NULL | 项目描述 |
 | settings | JSONB | NOT NULL | '{}' | 项目设置（含output_languages） |
@@ -46,12 +151,21 @@ CREATE UNIQUE INDEX uk_projects_name ON projects (name);
 CREATE INDEX idx_projects_domain ON projects (domain);
 ```
 
-**RLS策略**：
+**RLS策略**（projects表不按project_id隔离，因为它是隔离的根）：
 ```sql
 ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+
+-- SELECT 策略：允许所有应用查看所有 project 记录（公开）
 CREATE POLICY "projects_select_public" ON projects FOR SELECT USING (true);
-CREATE POLICY "projects_insert_public" ON projects FOR INSERT WITH CHECK (true);
-CREATE POLICY "projects_update_public" ON projects FOR UPDATE USING (true);
+
+-- INSERT 策略：禁止前端直接插入 project（只能通过后端 Service Key）
+CREATE POLICY "projects_insert_service" ON projects FOR INSERT WITH CHECK (false);
+
+-- UPDATE 策略：禁止前端直接更新 project（只能通过后端 Service Key）
+CREATE POLICY "projects_update_service" ON projects FOR UPDATE USING (false);
+
+-- DELETE 策略：禁止前端直接删除 project（只能通过后端 Service Key）
+CREATE POLICY "projects_delete_service" ON projects FOR DELETE USING (false);
 ```
 
 ---
@@ -63,7 +177,7 @@ CREATE POLICY "projects_update_public" ON projects FOR UPDATE USING (true);
 | 字段名 | 类型 | 约束 | 默认值 | 说明 |
 |--------|------|------|--------|------|
 | id | UUID | PK, DEFAULT gen_random_uuid() | - | 主键 |
-| project_id | UUID | NOT NULL, FK | - | 关联项目 |
+| project_id | UUID | NOT NULL, FK | - | 关联项目（隔离键） |
 | provider | TEXT | NOT NULL | - | LLM提供商（openai/anthropic/deepseek） |
 | base_url | TEXT | NOT NULL | - | API基础URL |
 | api_key | TEXT | NOT NULL | - | API密钥（加密存储） |
@@ -85,12 +199,36 @@ ADD CONSTRAINT fk_llm_config_project
 FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE;
 ```
 
-**RLS策略**：
+**RLS策略**（按project_id隔离）：
 ```sql
 ALTER TABLE llm_config ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "llm_config_select_public" ON llm_config FOR SELECT USING (true);
-CREATE POLICY "llm_config_insert_public" ON llm_config FOR INSERT WITH CHECK (true);
-CREATE POLICY "llm_config_update_public" ON llm_config FOR UPDATE USING (true);
+
+CREATE POLICY "llm_config_select_app" ON llm_config 
+FOR SELECT 
+USING (
+  project_id = (
+    SELECT id FROM projects 
+    WHERE name = current_setting('request.headers.x-app-id', true)
+  )
+);
+
+CREATE POLICY "llm_config_insert_app" ON llm_config 
+FOR INSERT 
+WITH CHECK (
+  project_id = (
+    SELECT id FROM projects 
+    WHERE name = current_setting('request.headers.x-app-id', true)
+  )
+);
+
+CREATE POLICY "llm_config_update_app" ON llm_config 
+FOR UPDATE 
+USING (
+  project_id = (
+    SELECT id FROM projects 
+    WHERE name = current_setting('request.headers.x-app-id', true)
+  )
+);
 ```
 
 ---
@@ -102,7 +240,7 @@ CREATE POLICY "llm_config_update_public" ON llm_config FOR UPDATE USING (true);
 | 字段名 | 类型 | 约束 | 默认值 | 说明 |
 |--------|------|------|--------|------|
 | id | UUID | PK, DEFAULT gen_random_uuid() | - | 主键 |
-| project_id | UUID | NOT NULL, FK | - | 关联项目 |
+| project_id | UUID | NOT NULL, FK | - | 关联项目（隔离键） |
 | date | DATE | NOT NULL | - | 新闻日期（分区键） |
 | title | TEXT | NOT NULL | - | 新闻标题 |
 | original_title | TEXT | NOT NULL | - | 原始标题 |
@@ -144,12 +282,46 @@ ADD CONSTRAINT fk_news_items_project
 FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE;
 ```
 
-**RLS策略**：
+**RLS策略**（按project_id隔离）：
 ```sql
 ALTER TABLE news_items ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "news_items_select_public" ON news_items FOR SELECT USING (deleted_at IS NULL);
-CREATE POLICY "news_items_insert_public" ON news_items FOR INSERT WITH CHECK (true);
-CREATE POLICY "news_items_update_public" ON news_items FOR UPDATE USING (true);
+
+CREATE POLICY "news_items_select_app" ON news_items 
+FOR SELECT 
+USING (
+  project_id = (
+    SELECT id FROM projects 
+    WHERE name = current_setting('request.headers.x-app-id', true)
+  )
+  AND deleted_at IS NULL
+);
+
+CREATE POLICY "news_items_insert_app" ON news_items 
+FOR INSERT 
+WITH CHECK (
+  project_id = (
+    SELECT id FROM projects 
+    WHERE name = current_setting('request.headers.x-app-id', true)
+  )
+);
+
+CREATE POLICY "news_items_update_app" ON news_items 
+FOR UPDATE 
+USING (
+  project_id = (
+    SELECT id FROM projects 
+    WHERE name = current_setting('request.headers.x-app-id', true)
+  )
+);
+
+CREATE POLICY "news_items_delete_app" ON news_items 
+FOR DELETE 
+USING (
+  project_id = (
+    SELECT id FROM projects 
+    WHERE name = current_setting('request.headers.x-app-id', true)
+  )
+);
 ```
 
 ---
@@ -161,7 +333,7 @@ CREATE POLICY "news_items_update_public" ON news_items FOR UPDATE USING (true);
 | 字段名 | 类型 | 约束 | 默认值 | 说明 |
 |--------|------|------|--------|------|
 | id | UUID | PK, DEFAULT gen_random_uuid() | - | 主键 |
-| project_id | UUID | NOT NULL, FK | - | 关联项目 |
+| project_id | UUID | NOT NULL, FK | - | 关联项目（隔离键） |
 | draft_id | UUID | NULL, FK | NULL | 关联draft |
 | date | DATE | NOT NULL | - | Cluster日期 |
 | cluster_theme | TEXT | NOT NULL | - | Cluster主题（吸引人的标题） |
@@ -208,12 +380,46 @@ ADD CONSTRAINT fk_clusters_draft
 FOREIGN KEY (draft_id) REFERENCES drafts(id) ON DELETE SET NULL;
 ```
 
-**RLS策略**：
+**RLS策略**（按project_id隔离）：
 ```sql
 ALTER TABLE clusters ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "clusters_select_public" ON clusters FOR SELECT USING (deleted_at IS NULL);
-CREATE POLICY "clusters_insert_public" ON clusters FOR INSERT WITH CHECK (true);
-CREATE POLICY "clusters_update_public" ON clusters FOR UPDATE USING (true);
+
+CREATE POLICY "clusters_select_app" ON clusters 
+FOR SELECT 
+USING (
+  project_id = (
+    SELECT id FROM projects 
+    WHERE name = current_setting('request.headers.x-app-id', true)
+  )
+  AND deleted_at IS NULL
+);
+
+CREATE POLICY "clusters_insert_app" ON clusters 
+FOR INSERT 
+WITH CHECK (
+  project_id = (
+    SELECT id FROM projects 
+    WHERE name = current_setting('request.headers.x-app-id', true)
+  )
+);
+
+CREATE POLICY "clusters_update_app" ON clusters 
+FOR UPDATE 
+USING (
+  project_id = (
+    SELECT id FROM projects 
+    WHERE name = current_setting('request.headers.x-app-id', true)
+  )
+);
+
+CREATE POLICY "clusters_delete_app" ON clusters 
+FOR DELETE 
+USING (
+  project_id = (
+    SELECT id FROM projects 
+    WHERE name = current_setting('request.headers.x-app-id', true)
+  )
+);
 ```
 
 ---
@@ -225,7 +431,7 @@ CREATE POLICY "clusters_update_public" ON clusters FOR UPDATE USING (true);
 | 字段名 | 类型 | 约束 | 默认值 | 说明 |
 |--------|------|------|--------|------|
 | id | UUID | PK, DEFAULT gen_random_uuid() | - | 主键 |
-| project_id | UUID | NOT NULL, FK | - | 关联项目 |
+| project_id | UUID | NOT NULL, FK | - | 关联项目（隔离键） |
 | date | DATE | NOT NULL | - | Draft日期 |
 | status | TEXT | NOT NULL | 'draft' | Draft状态（draft/approved/rejected） |
 | language | TEXT | NOT NULL | 'zh' | 输出语言（zh/en/zh-en/en-zh） |
@@ -255,12 +461,46 @@ ADD CONSTRAINT fk_drafts_project
 FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE;
 ```
 
-**RLS策略**：
+**RLS策略**（按project_id隔离）：
 ```sql
 ALTER TABLE drafts ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "drafts_select_public" ON drafts FOR SELECT USING (deleted_at IS NULL);
-CREATE POLICY "drafts_insert_public" ON drafts FOR INSERT WITH CHECK (true);
-CREATE POLICY "drafts_update_public" ON drafts FOR UPDATE USING (true);
+
+CREATE POLICY "drafts_select_app" ON drafts 
+FOR SELECT 
+USING (
+  project_id = (
+    SELECT id FROM projects 
+    WHERE name = current_setting('request.headers.x-app-id', true)
+  )
+  AND deleted_at IS NULL
+);
+
+CREATE POLICY "drafts_insert_app" ON drafts 
+FOR INSERT 
+WITH CHECK (
+  project_id = (
+    SELECT id FROM projects 
+    WHERE name = current_setting('request.headers.x-app-id', true)
+  )
+);
+
+CREATE POLICY "drafts_update_app" ON drafts 
+FOR UPDATE 
+USING (
+  project_id = (
+    SELECT id FROM projects 
+    WHERE name = current_setting('request.headers.x-app-id', true)
+  )
+);
+
+CREATE POLICY "drafts_delete_app" ON drafts 
+FOR DELETE 
+USING (
+  project_id = (
+    SELECT id FROM projects 
+    WHERE name = current_setting('request.headers.x-app-id', true)
+  )
+);
 ```
 
 ---
@@ -272,7 +512,7 @@ CREATE POLICY "drafts_update_public" ON drafts FOR UPDATE USING (true);
 | 字段名 | 类型 | 约束 | 默认值 | 说明 |
 |--------|------|------|--------|------|
 | id | UUID | PK, DEFAULT gen_random_uuid() | - | 主键 |
-| project_id | UUID | NOT NULL, FK | - | 关联项目 |
+| project_id | UUID | NOT NULL, FK | - | 关联项目（隔离键） |
 | draft_id | UUID | NOT NULL, FK | - | 关联draft |
 | date | DATE | NOT NULL | - | 文章日期 |
 | language | TEXT | NOT NULL | 'zh' | 文章语言 |
@@ -308,12 +548,46 @@ ADD CONSTRAINT fk_articles_draft
 FOREIGN KEY (draft_id) REFERENCES drafts(id) ON DELETE CASCADE;
 ```
 
-**RLS策略**：
+**RLS策略**（按project_id隔离）：
 ```sql
 ALTER TABLE articles ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "articles_select_public" ON articles FOR SELECT USING (deleted_at IS NULL);
-CREATE POLICY "articles_insert_public" ON articles FOR INSERT WITH CHECK (true);
-CREATE POLICY "articles_update_public" ON articles FOR UPDATE USING (true);
+
+CREATE POLICY "articles_select_app" ON articles 
+FOR SELECT 
+USING (
+  project_id = (
+    SELECT id FROM projects 
+    WHERE name = current_setting('request.headers.x-app-id', true)
+  )
+  AND deleted_at IS NULL
+);
+
+CREATE POLICY "articles_insert_app" ON articles 
+FOR INSERT 
+WITH CHECK (
+  project_id = (
+    SELECT id FROM projects 
+    WHERE name = current_setting('request.headers.x-app-id', true)
+  )
+);
+
+CREATE POLICY "articles_update_app" ON articles 
+FOR UPDATE 
+USING (
+  project_id = (
+    SELECT id FROM projects 
+    WHERE name = current_setting('request.headers.x-app-id', true)
+  )
+);
+
+CREATE POLICY "articles_delete_app" ON articles 
+FOR DELETE 
+USING (
+  project_id = (
+    SELECT id FROM projects 
+    WHERE name = current_setting('request.headers.x-app-id', true)
+  )
+);
 ```
 
 ---
@@ -322,10 +596,10 @@ CREATE POLICY "articles_update_public" ON articles FOR UPDATE USING (true);
 
 ```
 projects 1 ──── 1 llm_config          （一个项目有一个LLM配置）
-projects 1 ──── N news_items          （一个项目有多个新闻条目）
-projects 1 ──── N clusters            （一个项目有多个cluster）
-projects 1 ──── N drafts              （一个项目有多个draft）
-projects 1 ──── N articles            （一个项目有多篇文章）
+projects 1 ──── N news_items          （一个项目有多个新闻条目，按project_id隔离）
+projects 1 ──── N clusters            （一个项目有多个cluster，按project_id隔离）
+projects 1 ──── N drafts              （一个项目有多个draft，按project_id隔离）
+projects 1 ──── N articles            （一个项目有多篇文章，按project_id隔离）
 
 drafts 1 ──── N clusters              （一个draft包含多个cluster）
 drafts 1 ──── N articles              （一个draft生成多篇文章，按语言）
@@ -463,7 +737,7 @@ $$ LANGUAGE plpgsql;
 ## 向量检索示例
 
 ```sql
--- 查找相似新闻（相似度 > 0.7）
+-- 查找相似新闻（相似度 > 0.7，自动按project_id隔离）
 SELECT 
     id, 
     title, 
@@ -471,11 +745,15 @@ SELECT
     1 - (embedding <=> query_vector) AS similarity
 FROM news_items
 WHERE date = '2024-01-15'
+  AND project_id = (
+    SELECT id FROM projects 
+    WHERE name = current_setting('request.headers.x-app-id', true)
+  )
   AND deleted_at IS NULL
 ORDER BY embedding <=> query_vector
 LIMIT 10;
 
--- 查找最相似的cluster
+-- 查找最相似的cluster（自动按project_id隔离）
 SELECT 
     id,
     cluster_theme,
@@ -487,6 +765,10 @@ JOIN news_items ni ON ni.id IN (
     FROM jsonb_array_elements(c.cluster_refs) AS ref
 )
 WHERE c.date = '2024-01-15'
+  AND c.project_id = (
+    SELECT id FROM projects 
+    WHERE name = current_setting('request.headers.x-app-id', true)
+  )
   AND c.deleted_at IS NULL
 GROUP BY c.id, c.cluster_theme, c.core_insight
 ORDER BY avg_similarity DESC
@@ -523,19 +805,29 @@ FOR VALUES FROM ('2024-02-01') TO ('2024-03-01');
 ## 初始化数据（MVP）
 
 ```sql
--- 创建默认项目
+-- 创建 NewsHot 应用 Project 记录
 INSERT INTO projects (name, domain, description, settings)
 VALUES (
-    'AI-project',
+    'newshot',
     'AI',
-    'AI行业新闻聚合项目',
+    'NewsHot - AI新闻聚合平台',
     '{"output_languages": ["zh"]}'
+);
+
+-- 其他应用共享同一 Supabase Project 时，创建独立的 project 记录
+-- 例如：另一个应用 "other-app"
+INSERT INTO projects (name, domain, description, settings)
+VALUES (
+    'other-app',
+    'Other',
+    '其他应用',
+    '{"output_languages": ["en"]}'
 );
 
 -- 创建默认LLM配置（使用环境变量）
 INSERT INTO llm_config (project_id, provider, base_url, api_key, model)
 VALUES (
-    (SELECT id FROM projects WHERE name = 'AI-project'),
+    (SELECT id FROM projects WHERE name = 'newshot'),
     'deepseek',
     'https://api.deepseek.com',
     current_setting('appsettings.deepseek_api_key'),
@@ -545,4 +837,61 @@ VALUES (
 
 ---
 
-> **Schema原则：类型精确，约束完整，索引有理由，关系清晰，RLS启用。**
+## Supabase Client 实现示例
+
+```typescript
+// lib/supabase.ts
+
+import { createClient } from '@supabase/supabase-js'
+
+const APP_ID = process.env.SUPABASE_APP_ID || 'newshot'
+
+// 后端 Client（使用 Service Key，绑过 RLS，用于 Cron Jobs 和后端逻辑）
+export function createSupabaseClientService() {
+  return createClient(
+    process.env.SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_KEY!,
+    {
+      global: {
+        headers: {
+          'x-app-id': APP_ID
+        }
+      }
+    }
+  )
+}
+
+// 前端 Client（使用 Anon Key，受 RLS 保护，自动按 project_id 隔离）
+export function createSupabaseClientPublic() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      global: {
+        headers: {
+          'x-app-id': APP_ID
+        }
+      }
+    }
+  )
+}
+```
+
+---
+
+## 变更记录
+
+### v1.1（2026-05-11）
+**触发原因**：技术架构自审，补充 Supabase 多应用共享数据隔离策略
+**修改内容**：
+1. 新增「Supabase 多应用共享隔离策略」章节（方案对比、RLS策略模板）
+2. 所有业务表 RLS 策略从宽松策略（`USING (true)`）改为按 `project_id` 隔离
+3. `projects` 表 RLS 策略调整为：SELECT公开，INSERT/UPDATE/DELETE禁止前端直接操作
+4. 新增向量检索示例中的 `project_id` 过滤条件
+5. 新增 Supabase Client 实现示例（Service Key 和 Anon Key）
+6. 初始化数据示例补充多应用共享场景
+**影响范围**：database-optimizer 需按新 RLS 策略创建迁移脚本，backend-architect 需在 Supabase Client 中注入 x-app-id header
+
+---
+
+> **Schema原则：类型精确，约束完整，索引有理由，关系清晰，RLS启用按project_id隔离。**

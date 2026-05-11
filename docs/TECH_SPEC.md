@@ -1,5 +1,5 @@
 # 技术规格说明
-> 版本: 1.0 | 项目: NewsHot (Grabout Mind Record - AI新闻聚合平台)
+> 版本: 1.1 | 项目: NewsHot (Grabout Mind Record - AI新闻聚合平台)
 
 ---
 
@@ -8,16 +8,365 @@
 | 层级 | 技术选型 | 选型理由 |
 |------|---------|---------|
 | 语言 | TypeScript + Node.js | 与前端语言统一，Tool契约类型安全 |
-| 前端框架 | Next.js 14 (React) | SSR支持，SEO友好，全栈能力，App Router |
+| 前端框架 | **Next.js 15** (React) | **Turbopack稳定版、PPR优化、App Router成熟、Vercel原生兼容** |
 | 后端 | Next.js Route Handlers + API Routes | 全Vercel部署一体化，无需单独后端服务 |
-| 数据库 | Supabase PostgreSQL | 已有MCP，支持pgvector，JSON字段友好 |
+| 数据库 | Supabase PostgreSQL | 已有MCP，支持pgvector，JSON字段友好，**多应用共享隔离** |
 | 向量存储 | Supabase pgvector | 一体化服务，MVP简单 |
 | 缓存 | Upstash Redis | Vercel原生集成，边缘缓存，零运维 |
 | Embedding | 阿里云百炼 text-embedding-v4 | 成本优化(¥0.0005/1K tokens)，中文友好，1024维 |
-| LLM | Deepseek（起点）+ OpenAI + Anthropic | 成本优化，多家支持降低风险 |
+| LLM | Deepseek（起点）+ OpenAI + Anthropic | 成本优化，多家支持降低风险，**支持流式输出和Thinking** |
 | 定时任务 | Vercel Cron Jobs | 云原生，可靠性高，无需进程持久化 |
 | 部署 | Vercel（全栈一体化） | 零运维部署，自动CI/CD，Edge Network |
 | CI/CD | Vercel自动部署 + GitHub Actions验证 | Git推送自动触发，Preview验证 |
+
+---
+
+## Next.js 版本选择说明
+
+> **选择 Next.js 15 而非 14 或 16 的理由**
+
+### 版本对比
+
+| 版本 | 发布时间 | App Router 成熟度 | Turbopack | 关键特性 | 推荐度 |
+|------|---------|-------------------|-----------|---------|--------|
+| 14 | 2023.12 | 稳定（但部分API不稳定） | 实验性 | Server Actions、App Router | ⚠️ 可用，但非最新 |
+| **15** | **2024.10** | **成熟稳定** | **稳定版** | **PPR优化、缓存改进** | ✅✅ **强烈推荐** |
+| 16 | 未发布 | - | - | - | ❌ 不推荐（未发布） |
+
+### 选择理由
+
+1. **Turbopack 稳定版**：开发模式热更新速度提升 10x，显著改善开发体验
+2. **PPR（Partial Prerendering）**：静态部分预渲染 + 动态部分流式加载，完美匹配新闻聚合场景
+3. **App Router 成熟度**：经过一年迭代，API 稳定性更高，迁移风险更低
+4. **缓存系统改进**：更灵活的缓存控制策略，适合频繁更新的新闻数据
+5. **Vercel 完全兼容**：Vercel 对 Next.js 15 提供原生优化支持
+6. **社区生态完善**：15 版本文档、教程、示例代码更加完善
+
+---
+
+## Chatbot 流式输出与 Thinking 输出方案
+
+> **补充设计：支持 SSE 流式输出和 LLM Thinking/Reasoning 输出**
+
+### 流式输出设计
+
+#### SSE 接口：POST /api/v1/tools/stream
+
+```typescript
+// 前端 EventSource 调用
+const eventSource = new EventSource('/api/v1/tools/stream', {
+  headers: { 'Content-Type': 'application/json' }
+})
+
+eventSource.onmessage = (event) => {
+  const data = JSON.parse(event.data)
+  if (data.type === 'content') {
+    // 渲染增量内容
+    appendToChat(data.content)
+  } else if (data.type === 'thinking') {
+    // 渲染思考过程（可选显示）
+    appendThinking(data.thinking)
+  } else if (data.type === 'done') {
+    eventSource.close()
+  }
+}
+```
+
+#### SSE 响应格式
+
+```
+Content-Type: text/event-stream
+
+event: thinking
+data: {"type":"thinking","thinking":"正在分析cluster数据..."}
+
+event: content
+data: {"type":"content","content":"Cluster 1的核心洞察是..."}
+
+event: content
+data: {"type":"content","content":"关于OpenAI的最新动态..."}
+
+event: done
+data: {"type":"done","message":"完成"}
+```
+
+### Thinking 输出设计
+
+#### 各 Provider 支持情况
+
+| Provider | Thinking 支持 | API 参数 | 输出格式 |
+|----------|--------------|---------|---------|
+| Deepseek | ✅ 支持 | `include_reasoning: true` | `reasoning_content` 字段 |
+| OpenAI | ✅ 支持（o1系列） | `reasoning_effort: "low/medium/high"` | 内置推理，不暴露详情 |
+| Anthropic | ✅ 支持 | `thinking: { budget_tokens: 1024 }` | `thinking` block |
+
+#### LLMAdapter 扩展
+
+```typescript
+// lib/llm-adapter.ts（扩展）
+
+interface LLMResponse {
+  content: string
+  thinking?: string          // Thinking/Reasoning 内容（可选）
+  thinkingTokens?: number    // Thinking 消耗的 tokens（可选）
+}
+
+interface LLMAdapter {
+  config: LLMConfig
+  
+  // 核心方法（扩展）
+  chat(messages: ChatMessage[]): Promise<LLMResponse>
+  
+  // 流式方法（新增）
+  chatStream(
+    messages: ChatMessage[],
+    onThinking: (thinking: string) => void,
+    onContent: (content: string) => void
+  ): Promise<void>
+  
+  updateConfig(newConfig: Partial<LLMConfig>): void
+}
+
+// Deepseek 实现（支持 reasoning）
+class OpenAICompatibleAdapter {
+  async chat(messages: ChatMessage[]): Promise<LLMResponse> {
+    const response = await fetch(`${this.config.baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${this.config.apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: this.config.model,
+        messages,
+        include_reasoning: true    // Deepseek 特有参数
+      })
+    })
+    
+    const data = await response.json()
+    return {
+      content: data.choices[0].message.content,
+      thinking: data.choices[0].message.reasoning_content,  // Thinking 输出
+      thinkingTokens: data.usage?.reasoning_tokens
+    }
+  }
+  
+  async chatStream(messages, onThinking, onContent): Promise<void> {
+    const response = await fetch(`${this.config.baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${this.config.apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: this.config.model,
+        messages,
+        stream: true,
+        include_reasoning: true
+      })
+    })
+    
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      
+      const chunk = decoder.decode(value)
+      const lines = chunk.split('\n').filter(line => line.startsWith('data: '))
+      
+      for (const line of lines) {
+        const data = JSON.parse(line.slice(5))
+        if (data.choices?.[0]?.delta?.reasoning_content) {
+          onThinking(data.choices[0].delta.reasoning_content)
+        }
+        if (data.choices?.[0]?.delta?.content) {
+          onContent(data.choices[0].delta.content)
+        }
+      }
+    }
+  }
+}
+
+// Anthropic 实现（支持 extended thinking）
+class AnthropicAdapter {
+  async chat(messages: ChatMessage[]): Promise<LLMResponse> {
+    const systemMessage = messages.find(m => m.role === 'system')
+    const userMessages = messages.filter(m => m.role !== 'system')
+    
+    const response = await fetch(`${this.config.baseUrl}/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'x-api-key': this.config.apiKey,
+        'anthropic-version': '2023-06-01',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: this.config.model,
+        max_tokens: 4096,
+        system: systemMessage?.content,
+        messages: userMessages,
+        thinking: { budget_tokens: 1024 }    // Anthropic thinking 配置
+      })
+    })
+    
+    const data = await response.json()
+    const thinkingBlock = data.content.find(block => block.type === 'thinking')
+    const textBlock = data.content.find(block => block.type === 'text')
+    
+    return {
+      content: textBlock?.text || '',
+      thinking: thinkingBlock?.thinking || '',
+      thinkingTokens: thinkingBlock?.tokens_used
+    }
+  }
+}
+```
+
+---
+
+## Supabase 数据隔离策略
+
+> **多应用共享一个 Supabase Project 的数据隔离方案**
+
+### 问题背景
+
+- Supabase 免费账户限制 **2 个 Project**
+- 需要与其他项目共享同一个 Project
+- 需要保证数据隔离，防止跨应用数据泄露
+
+### 隔离方案对比
+
+| 方案 | 实现复杂度 | 隔离强度 | 性能影响 | Supabase 支持 | 推荐度 |
+|------|-----------|---------|---------|--------------|--------|
+| Schema 分离 | 高 | 最强 | 无 | ⚠️ Dashboard不支持多Schema UI | ❌ 不推荐 |
+| 表前缀（newshot_xxx） | 中 | 中 | 无 | ✅ 支持 | ⚠️ 管理复杂，查询不便 |
+| **project_id + RLS** | **低** | **强** | **微小** | ✅ **原生支持** | ✅✅ **强烈推荐** |
+| 独立 Project | 低 | 最强 | 无 | ❌ 免费账户限制2个 | ❌ 不推荐 |
+
+### 推荐方案：project_id + RLS 策略
+
+#### 设计原则
+
+1. **应用标识**：通过环境变量 `SUPABASE_APP_ID` 标识应用
+2. **数据隔离**：所有表已有 `project_id` 字段，通过 RLS 策略按应用隔离
+3. **性能优化**：`project_id` 索引已存在，查询性能影响极小
+4. **安全保证**：RLS 策略强制执行，即使代码错误也不会泄露跨应用数据
+
+#### 实现方案
+
+```typescript
+// lib/supabase.ts（扩展）
+
+// 应用标识（从环境变量读取）
+const APP_ID = process.env.SUPABASE_APP_ID || 'newshot'
+
+// 创建 Supabase Client 时注入应用标识
+export function createSupabaseClient() {
+  return createClient(
+    process.env.SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_KEY!,    // 使用 Service Key 绑过 RLS（后端）
+    {
+      global: {
+        headers: {
+          'x-app-id': APP_ID    // 自定义 header 标识应用
+        }
+      }
+    }
+  )
+}
+
+// 前端 Client（使用 Anon Key，受 RLS 保护）
+export function createSupabaseClientPublic() {
+  return createClient(
+    process.env.SUPABASE_URL!,
+    process.env.SUPABASE_ANON_KEY!,
+    {
+      global: {
+        headers: {
+          'x-app-id': APP_ID
+        }
+      }
+    }
+  )
+}
+```
+
+#### RLS 策略模板（按 project_id 隔离）
+
+```sql
+-- 为每个表设置 RLS 策略（按 project_id 隔离）
+-- news_items 表示例
+ALTER TABLE news_items ENABLE ROW LEVEL SECURITY;
+
+-- SELECT 策略：只允许访问自己应用的数据
+CREATE POLICY "news_items_select_app" ON news_items 
+FOR SELECT 
+USING (
+  project_id = current_setting('request.jwt.claims.project_id', true)::UUID
+  OR 
+  project_id = (SELECT id FROM projects WHERE name = current_setting('request.headers.x-app-id', true))
+);
+
+-- INSERT 策略：只能插入自己应用的数据
+CREATE POLICY "news_items_insert_app" ON news_items 
+FOR INSERT 
+WITH CHECK (
+  project_id = (SELECT id FROM projects WHERE name = current_setting('request.headers.x-app-id', true))
+);
+
+-- UPDATE 策略：只能更新自己应用的数据
+CREATE POLICY "news_items_update_app" ON news_items 
+FOR UPDATE 
+USING (
+  project_id = (SELECT id FROM projects WHERE name = current_setting('request.headers.x-app-id', true))
+);
+
+-- DELETE 策略：只能删除自己应用的数据
+CREATE POLICY "news_items_delete_app" ON news_items 
+FOR DELETE 
+USING (
+  project_id = (SELECT id FROM projects WHERE name = current_setting('request.headers.x-app-id', true))
+);
+```
+
+#### 环境变量配置
+
+```bash
+# .env.local（本地开发）
+SUPABASE_APP_ID=newshot    # 应用标识（用于 RLS 策略）
+
+# Vercel Dashboard（生产环境）
+SUPABASE_APP_ID=newshot    # 与其他项目区分
+```
+
+#### 初始化数据
+
+```sql
+-- 创建应用 Project 记录
+INSERT INTO projects (id, name, domain, description, settings)
+VALUES (
+  gen_random_uuid(),
+  'newshot',
+  'AI',
+  'NewsHot - AI新闻聚合平台',
+  '{"output_languages": ["zh"]}'
+);
+
+-- 其他应用共享同一 Supabase Project 时，创建独立的 project 记录
+INSERT INTO projects (id, name, domain, description, settings)
+VALUES (
+  gen_random_uuid(),
+  'other-app',
+  'Other',
+  '其他应用',
+  '{"output_languages": ["en"]}'
+);
+```
+
+### 隔离效果
+
+| 场景 | NewsHot 应用 | 其他应用 |
+|------|-------------|---------|
+| 查询 news_items | 只返回 `project_id = 'newshot'` 的数据 | 只返回 `project_id = 'other-app'` 的数据 |
+| 插入 news_items | 自动绑定 `project_id = 'newshot'` | 自动绑定 `project_id = 'other-app'` |
+| 跨应用查询 | ❌ RLS 阻止 | ❌ RLS 阻止 |
+| 数据泄露风险 | ✅ RLS 强制保护 | ✅ RLS 强制保护 |
 
 ---
 
@@ -56,16 +405,17 @@ project-root/
 │       │   │   ├── [id]/route.ts # GET /api/v1/draft/:id
 │       │   │   └── [id]/approve/route.ts
 │       │   └── tools/            # Chatbot Tools
-│       │   │   └── route.ts      # Tools统一入口
+│       │   │   ├── route.ts      # Tools统一入口（一次性响应）
+│       │   │   └── stream/route.ts # Tools流式入口（SSE）【新增】
 │       │   └── cron/             # Cron Jobs
 │       │       ├── fetch/route.ts    # 定时抓取
 │       │       └── cleanup/route.ts  # Redis清理
 │       └── health/route.ts       # 健康检查
 ├── lib/                          # 共享逻辑
-│   ├── supabase.ts               # Supabase Client
+│   ├── supabase.ts               # Supabase Client（支持多应用隔离）
 │   ├── redis.ts                  # Upstash Redis Client
 │   ├── embedding.ts              # 阿里云百炼 Embedding Service
-│   ├── llm-adapter.ts            # LLM适配器（支持OpenAI/Anthropic）
+│   ├── llm-adapter.ts            # LLM适配器（支持流式+Thinking）
 │   ├── fetcher.ts                # Feed抓取服务
 │   ├── processor.ts              # Processor服务（cluster聚合+摘要生成）
 │   ├── types/                    # TypeScript类型定义
@@ -83,6 +433,7 @@ project-root/
 │   │   ├── markdown-renderer.tsx # Markdown渲染组件
 │   │   ├── cluster-card.tsx      # Cluster卡片组件
 │   │   ├── chatbot-input.tsx     # Chatbot输入框组件
+│   │   ├── thinking-display.tsx  # Thinking显示组件【新增】
 │   │   └── skeleton.tsx          # Skeleton加载组件
 │   └── layout/                   # 布局组件
 │       ├── header.tsx
@@ -91,6 +442,7 @@ project-root/
 ├── hooks/                        # 自定义Hook
 │   ├── use-draft.ts              # draft状态管理
 │   ├── use-tools.ts              # Tools调用
+│   ├── use-tools-stream.ts       # Tools流式调用【新增】
 │   └── use-config.ts             # LLM配置管理
 ├── styles/                       # 样式文件
 │   └── globals.css               # 全局样式（Tailwind）
@@ -120,6 +472,8 @@ project-root/
 | 向量维度 | 1024维（阿里云百炼text-embedding-v4默认） |
 | 去重hash算法 | SHA256(title+url)，48小时TTL |
 | 重试策略 | 最多3次，指数退避（5min/15min/30min） |
+| **流式响应格式** | **SSE（text/event-stream），事件类型：thinking/content/done** |
+| **Thinking显示** | **可选字段，前端可折叠显示推理过程** |
 
 ---
 
@@ -134,6 +488,7 @@ project-root/
 SUPABASE_URL=https://xxx.supabase.co
 SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 SUPABASE_SERVICE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+SUPABASE_APP_ID=newshot             # 应用标识（多应用隔离）【新增】
 
 # =====================
 # Upstash Redis 配置（Vercel原生集成）
@@ -243,7 +598,7 @@ module.exports = nextConfig
 
 ## LLMAdapter 设计
 
-> 支持前端动态配置 LLM Provider（OpenAI | Anthropic | Deepseek）
+> 支持前端动态配置 LLM Provider（OpenAI | Anthropic | Deepseek），支持流式输出和Thinking
 
 ### 架构设计
 
@@ -264,11 +619,24 @@ interface ChatMessage {
   content: string
 }
 
+interface LLMResponse {
+  content: string
+  thinking?: string          // Thinking/Reasoning 内容【新增】
+  thinkingTokens?: number    // Thinking 消耗的 tokens【新增】
+}
+
 interface LLMAdapter {
   config: LLMConfig
   
   // 核心方法
-  chat(messages: ChatMessage[]): Promise<string>
+  chat(messages: ChatMessage[]): Promise<LLMResponse>
+  
+  // 流式方法【新增】
+  chatStream(
+    messages: ChatMessage[],
+    onThinking: (thinking: string) => void,
+    onContent: (content: string) => void
+  ): Promise<void>
   
   // 配置管理
   updateConfig(newConfig: Partial<LLMConfig>): void
@@ -282,7 +650,7 @@ class OpenAICompatibleAdapter implements LLMAdapter {
     this.config = config
   }
   
-  async chat(messages: ChatMessage[]): Promise<string> {
+  async chat(messages: ChatMessage[]): Promise<LLMResponse> {
     const response = await fetch(`${this.config.baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: {
@@ -291,7 +659,8 @@ class OpenAICompatibleAdapter implements LLMAdapter {
       },
       body: JSON.stringify({
         model: this.config.model,
-        messages
+        messages,
+        include_reasoning: true    // Deepseek 特有参数【新增】
       })
     })
     
@@ -300,7 +669,48 @@ class OpenAICompatibleAdapter implements LLMAdapter {
     }
     
     const data = await response.json()
-    return data.choices[0].message.content
+    return {
+      content: data.choices[0].message.content,
+      thinking: data.choices[0].message.reasoning_content,  // Thinking 输出【新增】
+      thinkingTokens: data.usage?.reasoning_tokens
+    }
+  }
+  
+  async chatStream(messages, onThinking, onContent): Promise<void> {
+    const response = await fetch(`${this.config.baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.config.apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: this.config.model,
+        messages,
+        stream: true,
+        include_reasoning: true
+      })
+    })
+    
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      
+      const chunk = decoder.decode(value)
+      const lines = chunk.split('\n').filter(line => line.startsWith('data: '))
+      
+      for (const line of lines) {
+        const data = JSON.parse(line.slice(5))
+        if (data.choices?.[0]?.delta?.reasoning_content) {
+          onThinking(data.choices[0].delta.reasoning_content)
+        }
+        if (data.choices?.[0]?.delta?.content) {
+          onContent(data.choices[0].delta.content)
+        }
+      }
+    }
   }
   
   updateConfig(newConfig: Partial<LLMConfig>): void {
@@ -315,7 +725,7 @@ class AnthropicAdapter implements LLMAdapter {
     this.config = config
   }
   
-  async chat(messages: ChatMessage[]): Promise<string> {
+  async chat(messages: ChatMessage[]): Promise<LLMResponse> {
     // Anthropic API格式转换
     const systemMessage = messages.find(m => m.role === 'system')
     const userMessages = messages.filter(m => m.role !== 'system')
@@ -334,7 +744,8 @@ class AnthropicAdapter implements LLMAdapter {
         messages: userMessages.map(m => ({
           role: m.role,
           content: m.content
-        }))
+        })),
+        thinking: { budget_tokens: 1024 }    // Anthropic thinking 配置【新增】
       })
     })
     
@@ -343,7 +754,14 @@ class AnthropicAdapter implements LLMAdapter {
     }
     
     const data = await response.json()
-    return data.content[0].text
+    const thinkingBlock = data.content.find(block => block.type === 'thinking')
+    const textBlock = data.content.find(block => block.type === 'text')
+    
+    return {
+      content: textBlock?.text || '',
+      thinking: thinkingBlock?.thinking || '',
+      thinkingTokens: thinkingBlock?.tokens_used
+    }
   }
   
   updateConfig(newConfig: Partial<LLMConfig>): void {
@@ -422,8 +840,9 @@ Stage 4: Cluster聚合（同步计算，无IO）
 - 耗时：5-10分钟（CPU计算）
 
 Stage 5: 摘要生成（异步，LLM调用）
-- for cluster: llmAdapter.chat(prompt)
+- for cluster: llmAdapter.chat(prompt) -> Promise<LLMResponse>
 - Promise.all() 并行调用LLM生成core_insight
+- 可获取thinking字段（可选记录推理过程）【新增】
 - 合并结果生成draft
 - 耗时：10-20分钟（LLM API调用）
 
@@ -545,7 +964,7 @@ function buildPromptForLanguage(clusters: Cluster[], lang: OutputLanguage): stri
   }
   
   return `${langInstructions[lang]}
-  
+
 Cluster数据：
 ${JSON.stringify(clusters, null, 2)}
 `
@@ -687,7 +1106,7 @@ export async function withRetry<T>(
 | 阿里云百炼Embedding | ¥0.45 | 100条/日 × 300tokens × ¥0.0005/1K |
 | Vercel免费额度 | $0 | 覆盖MVP（带宽/执行时间） |
 | Vercel Cron Jobs | $0.50 | 2个任务（需付费） |
-| Supabase免费额度 | $0 | 覆盖MVP（500MB数据库） |
+| Supabase免费额度 | $0 | 覆盖MVP（500MB数据库，多应用共享） |
 | Upstash Redis免费额度 | $0 | 覆盖MVP（10,000 commands/day） |
 | LLM API（Deepseek） | 按实际使用 | 成本优化，多家支持 |
 
@@ -750,6 +1169,7 @@ jobs:
 | HTTPS | 加密传输 | Vercel自动HTTPS |
 | API限流 | 后续扩展 | Vercel Edge Middleware |
 | 认证 | MVP无认证 | 单用户，后续扩展 |
+| **数据隔离** | **多应用共享隔离** | **project_id + RLS策略** |
 
 ---
 
@@ -763,4 +1183,19 @@ jobs:
 
 ---
 
-> **核心原则：零运维部署，全栈一体化，异步管道优化，成本控制优先。**
+## 变更记录
+
+### v1.1（2026-05-11）
+**触发原因**：技术架构自审，解决三个核心问题
+**修改内容**：
+1. Next.js版本从14升级到15（Turbopack稳定版、PPR优化、App Router成熟）
+2. 补充Chatbot流式输出和Thinking输出方案（SSE接口、LLMAdapter扩展）
+3. 补充Supabase多应用共享数据隔离策略（project_id + RLS）
+4. 新增环境变量 `SUPABASE_APP_ID`（应用标识）
+5. 项目目录结构新增流式接口路由和Thinking组件
+6. LLMResponse接口新增thinking和thinkingTokens字段
+**影响范围**：backend-architect、frontend-developer、database-optimizer 需按新契约实现
+
+---
+
+> **核心原则：零运维部署，全栈一体化，异步管道优化，成本控制优先，多应用共享隔离。**
