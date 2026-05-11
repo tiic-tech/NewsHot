@@ -32,6 +32,19 @@ const PROVIDER_ACTIVE_MODELS: Record<string, string[]> = {
   anthropic: ['claude-3-5-haiku', 'claude-3-5-sonnet', 'claude-3-opus']
 }
 
+/**
+ * 遮蔽 API Key，只保留前3和后3字符
+ * 例如：sk-proj-abc123xyz → sk-***...***xyz
+ */
+function maskApiKey(apiKey: string): string {
+  if (!apiKey || apiKey.length <= 6) {
+    return '***'
+  }
+  const prefix = apiKey.slice(0, 3)
+  const suffix = apiKey.slice(-3)
+  return `${prefix}***...***${suffix}`
+}
+
 // ============================================================
 // GET Handler - 读取当前 LLM 配置
 // ============================================================
@@ -78,13 +91,13 @@ export async function GET() {
       )
     }
 
-    // 成功响应
+    // 成功响应（遮蔽 API Key）
     return NextResponse.json({
       data: {
         id: data.id,
         provider: data.provider,
         baseUrl: data.base_url,
-        apiKey: data.api_key,
+        apiKey: maskApiKey(data.api_key),
         model: data.model,
         validatedAt: data.validated_at,
         availableModels: data.available_models,
@@ -268,13 +281,13 @@ export async function POST(request: NextRequest) {
       savedConfig = data
     }
 
-    // 成功响应
+    // 成功响应（遮蔽 API Key）
     return NextResponse.json({
       data: {
         id: savedConfig.id,
         provider: savedConfig.provider,
         baseUrl: savedConfig.base_url,
-        apiKey: savedConfig.api_key,
+        apiKey: maskApiKey(savedConfig.api_key),
         model: savedConfig.model,
         validatedAt: savedConfig.validated_at,
         availableModels: savedConfig.available_models,

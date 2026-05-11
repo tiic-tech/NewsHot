@@ -18,13 +18,19 @@ import { generateEmbeddings } from '@/lib/embedding'
 // 环境变量
 // ============================================================
 
-const CRON_SECRET = process.env.CRON_SECRET || ''
+const CRON_SECRET = process.env.CRON_SECRET
 
 // ============================================================
 // Cron 鉴权验证
 // ============================================================
 
 function validateCronAuth(request: NextRequest): boolean {
+  // CRON_SECRET 必须配置
+  if (!CRON_SECRET) {
+    console.error('CRON_SECRET 未配置，Cron API 认证失效')
+    return false
+  }
+
   const authHeader = request.headers.get('authorization')
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return false

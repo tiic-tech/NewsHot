@@ -13,6 +13,31 @@ import { getLLMAdapter, ChatMessage } from '@/lib/llm-adapter'
 import { isValidUUID } from '@/lib/utils/format'
 
 // ============================================================
+// 环境变量
+// ============================================================
+
+const TOOLS_SECRET = process.env.TOOLS_SECRET
+
+// ============================================================
+// 认证验证
+// ============================================================
+
+function validateAuth(request: NextRequest): boolean {
+  // TOOLS_SECRET 必须配置
+  if (!TOOLS_SECRET) {
+    console.error('TOOLS_SECRET 未配置，Tools API 认证失效')
+    return false
+  }
+
+  const authHeader = request.headers.get('authorization')
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return false
+  }
+  const token = authHeader.replace('Bearer ', '')
+  return token === TOOLS_SECRET
+}
+
+// ============================================================
 // 类型定义
 // ============================================================
 
@@ -702,6 +727,14 @@ async function executeTool(toolName: string, params: Record<string, unknown>): P
 
 export async function POST(request: NextRequest) {
   try {
+    // 认证检查
+    if (!validateAuth(request)) {
+      return NextResponse.json(
+        { error: 'unauthorized', message: '未提供有效认证 Token' },
+        { status: 401 }
+      )
+    }
+
     const body: ToolsRequest = await request.json()
     const { toolName, params } = body
 
