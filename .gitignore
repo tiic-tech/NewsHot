@@ -32,6 +32,8 @@ logs/
 dist/
 build/
 *.egg-info/
+.next/
+out/
 
 # Test
 .pytest_cache/

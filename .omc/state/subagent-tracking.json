@@ -80,10 +80,137 @@
       "status": "completed",
       "completed_at": "2026-05-11T06:30:47.005Z",
       "duration_ms": 479317
+    },
+    {
+      "agent_id": "a097f2ee46742d7e5",
+      "agent_type": "product-manager",
+      "started_at": "2026-05-11T08:17:41.386Z",
+      "parent_mode": "none",
+      "status": "running"
+    },
+    {
+      "agent_id": "a640c3125ab9e6ddf",
+      "agent_type": "general-purpose",
+      "started_at": "2026-05-11T08:18:25.226Z",
+      "parent_mode": "none",
+      "status": "running"
+    },
+    {
+      "agent_id": "a373ba737b28dcd9a",
+      "agent_type": "general-purpose",
+      "started_at": "2026-05-11T08:18:39.102Z",
+      "parent_mode": "none",
+      "status": "running"
+    },
+    {
+      "agent_id": "ad7597416ce2a2c3e",
+      "agent_type": "product-manager",
+      "started_at": "2026-05-11T08:51:19.232Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-05-11T08:53:12.536Z",
+      "duration_ms": 113304
+    },
+    {
+      "agent_id": "ae31200d21f5d50de",
+      "agent_type": "software-architect",
+      "started_at": "2026-05-11T08:55:42.712Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-05-11T09:05:39.482Z",
+      "duration_ms": 596770
+    },
+    {
+      "agent_id": "a4dfd8aa105c50df5",
+      "agent_type": "software-architect",
+      "started_at": "2026-05-11T09:16:06.128Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-05-11T09:27:26.002Z",
+      "duration_ms": 679874
+    },
+    {
+      "agent_id": "abbe083a2a01ad6f4",
+      "agent_type": "software-architect",
+      "started_at": "2026-05-11T09:32:36.985Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-05-11T09:42:59.050Z",
+      "duration_ms": 622065
+    },
+    {
+      "agent_id": "aeb6885b58ee66582",
+      "agent_type": "ui-designer",
+      "started_at": "2026-05-11T10:30:47.738Z",
+      "parent_mode": "none",
+      "status": "running"
+    },
+    {
+      "agent_id": "a4668cf1b8d13a108",
+      "agent_type": "ui-designer",
+      "started_at": "2026-05-11T10:36:32.290Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-05-11T10:41:02.468Z",
+      "duration_ms": 270178
+    },
+    {
+      "agent_id": "a85da31c7bfd93dbf",
+      "agent_type": "database-optimizer",
+      "started_at": "2026-05-11T12:37:13.102Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-05-11T12:41:41.519Z",
+      "duration_ms": 268417
+    },
+    {
+      "agent_id": "a2f76e77a91a0c9a5",
+      "agent_type": "code-reviewer",
+      "started_at": "2026-05-11T12:45:32.063Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-05-11T12:46:54.188Z",
+      "duration_ms": 82125
+    },
+    {
+      "agent_id": "ab2842831a5853289",
+      "agent_type": "backend-architect",
+      "started_at": "2026-05-11T12:50:53.455Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-05-11T12:58:19.724Z",
+      "duration_ms": 446269
+    },
+    {
+      "agent_id": "a78ad9a3aa1a42888",
+      "agent_type": "backend-architect",
+      "started_at": "2026-05-11T12:59:57.438Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-05-11T13:06:33.464Z",
+      "duration_ms": 396026
+    },
+    {
+      "agent_id": "ad1cde9676436865f",
+      "agent_type": "backend-architect",
+      "started_at": "2026-05-11T13:07:56.625Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-05-11T13:31:16.744Z",
+      "duration_ms": 1400119
+    },
+    {
+      "agent_id": "ab2c7c7e479fffd8e",
+      "agent_type": "software-architect",
+      "started_at": "2026-05-11T13:32:42.872Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-05-11T13:39:22.841Z",
+      "duration_ms": 399969
     }
   ],
-  "total_spawned": 4,
-  "total_completed": 9,
+  "total_spawned": 19,
+  "total_completed": 20,
   "total_failed": 0,
-  "last_updated": "2026-05-11T07:46:03.045Z"
+  "last_updated": "2026-05-11T13:39:22.945Z"
 }
