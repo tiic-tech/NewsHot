@@ -14,6 +14,12 @@
 | Fetcher Service | TASK-B04 | ✅ 完成 | lib/fetcher.ts | Feed抓取、去重、存储 |
 | Processor Service | TASK-B05 | ✅ 完成 | lib/processor.ts | Cluster聚合、LLM摘要、Draft创建 |
 | Utils 工具函数 | TASK-B06 | ✅ 完成 | lib/utils/*.ts | dedupe/retry/format |
+| Next.js 项目初始化 | TASK-F01 | ✅ 完成 | package.json, tsconfig.json, next.config.js等 | Next.js 15 + Tailwind CSS |
+| 健康检查接口 | TASK-B25 | ✅ 完成 | app/api/health/route.ts | GET /api/health |
+| LLM 配置验证接口 | TASK-B07 | ✅ 完成 | app/api/v1/auth/config/validate/route.ts | POST /api/v1/auth/config/validate |
+| LLM 模型列表接口 | TASK-B08 | ✅ 完成 | app/api/v1/auth/models/route.ts | GET /api/v1/auth/models |
+| LLM 配置保存接口 | TASK-B09 | ✅ 完成 | app/api/v1/auth/config/route.ts (POST) | POST /api/v1/auth/config |
+| LLM 配置读取接口 | TASK-B10 | ✅ 完成 | app/api/v1/auth/config/route.ts (GET) | GET /api/v1/auth/config |
 
 ---
 
@@ -150,6 +156,112 @@
 
 ---
 
+## TASK-F01：Next.js 项目初始化
+
+**文件**：
+- `package.json` - 依赖配置（Next.js 15.3.2, React 19, Supabase, Upstash Redis）
+- `tsconfig.json` - TypeScript 严格模式配置
+- `next.config.js` - standalone 输出模式、basePath 配置
+- `tailwind.config.js` - CSS 变量集成
+- `postcss.config.js` - PostCSS 插件
+- `app/layout.tsx` - 根布局
+- `app/page.tsx` - 首页占位
+- `styles/globals.css` - 全局样式（引入 variables.css + Tailwind）
+
+**功能**：
+- Next.js 15 App Router 架构
+- TypeScript 严格模式
+- Tailwind CSS + CSS 变量体系
+- standalone 输出模式（Docker 部署支持）
+- basePath 子路径部署支持
+
+---
+
+### TASK-B07：LLM 配置验证接口
+
+**文件**：`app/api/v1/auth/config/validate/route.ts`
+
+**功能**：
+- POST /api/v1/auth/config/validate
+- Provider 验证（调用 /v1/models 接口）
+- 返回可用模型列表（过滤弃用模型）
+- 错误码：api_key_invalid、base_url_invalid、service_unavailable
+- 验证逻辑：Deepseek/OpenAI 调用 models 接口，Anthropic 使用预设列表
+
+**契约对齐**：
+- 请求体字段：provider、baseUrl、apiKey（完全匹配）
+- 响应字段：valid、provider、baseUrl、availableModels、message（完全匹配）
+- 错误码覆盖所有契约定义的场景
+
+---
+
+### TASK-B08：LLM 模型列表接口
+
+**文件**：`app/api/v1/auth/models/route.ts`
+
+**功能**：
+- GET /api/v1/auth/models?provider={provider}
+- 返回 Provider 静态模型列表
+- 包含 status、recommended、cost、description
+- 弃用模型标注 deprecatedDate
+
+**契约对齐**：
+- 查询参数：provider（完全匹配）
+- 响应字段：provider、models（id、name、status、recommended、cost、description、deprecatedDate）
+- 错误码：validation_error、internal_error
+
+---
+
+### TASK-B09：LLM 配置保存接口
+
+**文件**：`app/api/v1/auth/config/route.ts`（POST 部分）
+
+**功能**：
+- POST /api/v1/auth/config
+- 保存 LLM 配置到 llm_config 表
+- validatedAt 和 availableModels 字段写入
+- 模型可用性检查（model_not_available）
+- 支持创建新配置和更新现有配置
+
+**契约对齐**：
+- 请求体字段：provider、baseUrl、apiKey、model（完全匹配）
+- 响应字段：id、provider、baseUrl、apiKey、model、validatedAt、availableModels、updatedAt
+- 错误码：validation_error、model_not_available、internal_error
+
+---
+
+### TASK-B10：LLM 配置读取接口
+
+**文件**：`app/api/v1/auth/config/route.ts`（GET 部分）
+
+**功能**：
+- GET /api/v1/auth/config
+- 读取当前 LLM 配置
+- 返回 validatedAt 和 availableModels
+- 404 config_not_found 处理
+
+**契约对齐**：
+- 响应字段：id、provider、baseUrl、apiKey、model、validatedAt、availableModels、updatedAt
+- 错误码：config_not_found、internal_error
+
+---
+
+### TASK-B25：健康检查接口
+
+**文件**：`app/api/health/route.ts`
+
+**功能**：
+- GET /api/health
+- 检查 Supabase 连接状态
+- 返回 status、supabase、redis、timestamp
+- 无需鉴权，任何情况返回 200 或 503
+
+**契约对齐**：
+- 响应字段：status、supabase、redis、timestamp
+- 错误码：service_unavailable
+
+---
+
 ## ISSUES
 
 无（实现过程中未发现契约歧义）
@@ -184,13 +296,11 @@
 
 ## 下一步任务
 
-- TASK-B05 ~ TASK-B08：LLM 配置接口（验证、模型列表、保存、读取）
 - TASK-B09 ~ TASK-B10：数据源接口
 - TASK-B11 ~ TASK-B12：文章接口
 - TASK-B14 ~ TASK-B16：Draft 接口
 - TASK-B17 ~ TASK-B22：Chatbot Tools 接口
 - TASK-B23 ~ TASK-B24：Cron Jobs 接口
-- TASK-B25：健康检查接口
 
 ---
 
