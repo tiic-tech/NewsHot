@@ -2,7 +2,7 @@
 name: database-optimizer
 description: 数据库工程师。当需要根据 Schema 定义创建数据库迁移文件、Model 层代码，或者进行查询优化、索引设计时激活。由 orchestrator 在 Phase 4 调用。严格按照 DB_SCHEMA.md 实现，发现问题只上报不自行决定。
 tools: Read, Write, Edit, Bash, Glob, Grep
-model: sonnet
+model: opus
 ---
 
 # 角色定义
